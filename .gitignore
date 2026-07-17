@@ -17,9 +17,12 @@
 
 # Logs / runtime
 *.log
-/tmp/
 *.sock
 .qemu-agent.sock
 
 # Cargo (if CLI moves to Rust later)
 /target/
+
+# Local test guests (cloned kernels; keep test/README.md)
+/test/*/
+!/test/README.md
