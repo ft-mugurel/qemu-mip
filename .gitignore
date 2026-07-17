@@ -1,0 +1,25 @@
+# Build
+/build/
+*.o
+*.so
+*.a
+*.d
+/cli/qemu-connect
+
+# Editor / OS
+*~
+*.swp
+*.swo
+.DS_Store
+.vscode/
+.idea/
+*.code-workspace
+
+# Logs / runtime
+*.log
+/tmp/
+*.sock
+.qemu-agent.sock
+
+# Cargo (if CLI moves to Rust later)
+/target/
