@@ -22,6 +22,8 @@ QEMU’s plugin API is the supported out-of-tree extension point. Combined with
 
 See [docs/architecture.md](docs/architecture.md).
 
+**Implementation plan:** [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) (PR-ordered roadmap).
+
 ## Requirements
 
 - QEMU built with **plugins** (`-plugin` works; QEMU **≥ 8** recommended, **11** tested)
