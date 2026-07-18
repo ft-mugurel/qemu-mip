@@ -6,6 +6,7 @@
 #include "qemu-connect.h"
 #include "qmp.h"
 #include "run.h"
+#include "session.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -37,7 +38,9 @@ static int usage(const char *argv0)
             "QMP commands (use --qmp PATH):\n"
             "  qmp-ping | quit | key <qcode> | type <string>\n"
             "Orchestration:\n"
-            "  run --iso PATH [--expect STR ...] ...\n"
+            "  guest [shell command...]            # one-shot munux boot+cmd\n"
+            "  session start|cmd|console|stop      # multi-cmd without reboot\n"
+            "  run --iso PATH [--disk] [--expect/--type] [--show]\n"
             "\n"
             "Plugin default socket: %s\n",
             argv0, QEMU_CONNECT_DEFAULT_SOCK);
@@ -263,6 +266,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(cmd, "guest") == 0) {
         return qc_cmd_guest(argc - (i + 1), argv + i + 1);
+    }
+    if (strcmp(cmd, "session") == 0) {
+        return qc_cmd_session(argc - (i + 1), argv + i + 1);
     }
 
     if (strcmp(cmd, "ping") == 0) {

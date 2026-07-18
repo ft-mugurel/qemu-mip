@@ -15,6 +15,21 @@ description: >
 
 ## Default commands (preferred)
 
+### Multi-command (P0 — use this for several shell cmds)
+
+```sh
+./build/qemu-connect session start
+./build/qemu-connect session cmd help
+./build/qemu-connect session cmd ls
+./build/qemu-connect session stop
+```
+
+MCP: `qemu_session_start` → `qemu_session_cmd` → `qemu_session_stop`.  
+Results are **JSON** (`ok`, `console`, `exit_code`).
+
+### One-shot
+
+
 From the **qemu-connect** repo root:
 
 ```sh

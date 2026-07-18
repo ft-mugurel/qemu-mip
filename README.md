@@ -93,7 +93,18 @@ munux>
 
 ## Commands
 
-### `guest` — simplest (recommended)
+### `session` — multi-command (recommended for agents)
+
+```sh
+./build/qemu-connect session start     # boot once (~1s)
+./build/qemu-connect session cmd help  # ~200ms
+./build/qemu-connect session cmd ls
+./build/qemu-connect session stop
+```
+
+JSON on stdout each time (`ok`, `console`, `exit_code`).
+
+### `guest` — one-shot
 
 ```sh
 ./build/qemu-connect guest [shell words…]
@@ -156,6 +167,7 @@ cd mcp && npm install && npm run build
 | `qemu_build_guest` | Build plugin + munux ISO/disk |
 | `qemu_guest` | Same as `guest` |
 | `qemu_run` | Same as `run` |
+| `qemu_session_*` | start / cmd / console / status / stop |
 
 Host config: [mcp/mcp.example.json](mcp/mcp.example.json) and [mcp/README.md](mcp/README.md).
 

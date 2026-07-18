@@ -28,7 +28,8 @@ PLUGIN_SRCS    := \
 	$(PLUGIN_DIR)/hypercall.c
 
 PLUGIN_OBJS    := $(patsubst $(PLUGIN_DIR)/%.c,$(BUILD_DIR)/%.o,$(PLUGIN_SRCS))
-CLI_OBJS       := $(BUILD_DIR)/cli_main.o $(BUILD_DIR)/cli_qmp.o $(BUILD_DIR)/cli_run.o
+CLI_OBJS       := $(BUILD_DIR)/cli_main.o $(BUILD_DIR)/cli_qmp.o \
+	$(BUILD_DIR)/cli_run.o $(BUILD_DIR)/cli_session.o
 VGA_UNIT_OBJS  := $(BUILD_DIR)/vga.o $(BUILD_DIR)/test_vga_unit.o
 
 .PHONY: all plugin cli guest clean dirs help test-load test-ping test-vga-unit \
@@ -40,7 +41,8 @@ all: plugin cli
 help:
 	@echo "qemu-connect targets:"
 	@echo "  all / plugin / cli"
-	@echo "  guest [CMD=help]     simple munux boot/type/show"
+	@echo "  guest [CMD=help]     one-shot munux boot/type/show"
+	@echo "  session              multi-cmd without reboot (see AGENTS.md)"
 	@echo "  test-ping test-vga-unit test-qmp test-run test-mem-hypercall"
 	@echo "  test-munux-shell test-refresh smoke"
 
@@ -69,6 +71,9 @@ $(BUILD_DIR)/cli_qmp.o: $(CLI_DIR)/qmp.c | dirs
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(BUILD_DIR)/cli_run.o: $(CLI_DIR)/run.c | dirs
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/cli_session.o: $(CLI_DIR)/session.c | dirs
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(BUILD_DIR)/test_vga_unit.o: $(TEST_DIR)/test_vga_unit.c | dirs

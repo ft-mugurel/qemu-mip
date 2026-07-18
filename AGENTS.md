@@ -12,10 +12,16 @@ guest, read the VGA console, and type shell commands** without a human GUI.
 | `make build` / `cargo build` only | **Not enough** |
 | Runtime check with exit **0** | **Required** for boot / shell / FS work |
 
-Preferred check:
+Preferred checks:
 
 ```sh
+# single command
 ./build/qemu-connect guest help
+
+# several commands (faster)
+./build/qemu-connect session start
+./build/qemu-connect session cmd help
+./build/qemu-connect session stop
 ```
 
 ## One-time / after kernel changes
@@ -147,3 +153,27 @@ Protocol details: [docs/protocol.md](docs/protocol.md).
 | [test/README.md](test/README.md) | Local munux clone |
 
 Grok skill: `.grok/skills/qemu-connect/` → `/qemu-connect`
+
+## Multi-command without reboot (`session`) — preferred for agents
+
+Boot **once**, run many shell commands, then stop:
+
+```sh
+./build/qemu-connect session start
+./build/qemu-connect session cmd help
+./build/qemu-connect session cmd ls
+./build/qemu-connect session cmd about
+./build/qemu-connect session console   # JSON with console field
+./build/qemu-connect session stop
+```
+
+Every subcommand prints **one JSON object** on stdout (`ok`, `exit_code`, `console`, …).
+
+| | one-shot `guest` | **`session`** |
+|--|------------------|---------------|
+| Boot cost | every call | **once** |
+| Best for | single check | multi-step agent loops |
+| Speed | ~1s+ per cmd | ~200ms per cmd after start |
+
+MCP tools: `qemu_session_start`, `qemu_session_cmd`, `qemu_session_console`, `qemu_session_stop`.
+

@@ -1,4 +1,4 @@
-# qemu-connect MCP server (v0.2)
+# qemu-connect MCP server (v0.3)
 
 Thin **MCP** wrapper around the **qemu-connect CLI**.
 
@@ -9,7 +9,12 @@ Thin **MCP** wrapper around the **qemu-connect CLI**.
 | `qemu_connect_info` | Path / binary diagnostics |
 | `qemu_build_guest` | `make plugin cli` and/or `make -C test/munux iso disk` |
 | `qemu_guest` | `qemu-connect guest [cmd…]` |
-| `qemu_run` | `qemu-connect run --iso … --disk … --expect/--type … --show` |
+| `qemu_run` | `qemu-connect run …` |
+| `qemu_session_start` | Boot once |
+| `qemu_session_cmd` | Shell cmd without reboot |
+| `qemu_session_console` | Read VGA text |
+| `qemu_session_status` | Session + guest status |
+| `qemu_session_stop` | Tear down |
 
 ## Setup
 
