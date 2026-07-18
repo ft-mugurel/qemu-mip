@@ -6,8 +6,8 @@
 Coding agents can boot a kernel under QEMU and **observe / drive** it without a
 human watching the VGA window — and without forking QEMU.
 
-> Status: **PR3+PR4** — vCPU refresh queue, CLI `expect`, `make smoke` / `test-munux-panic`.
-> Next: QMP keys/quit (PR5), one-shot `run` (PR6).
+> Status: **PR5+PR6** — QMP keys/quit, `qemu-connect run` one-shot agent workflow.
+> Next: mem_read/discon (PR7), optional hypercall (PR8), polish (PR9).
 
 ## Why a plugin?
 
@@ -103,9 +103,9 @@ Line-oriented JSON over the Unix socket. See [docs/protocol.md](docs/protocol.md
 - [x] Dedicated socket thread + framing + `make test-ping` (PR1)
 - [x] Instrument stores to VGA text RAM (`0xB8000`) → real `get_console` (PR2)
 - [x] `expect` / timeout helpers in CLI (PR4)
-- [ ] QMP helper for `send-key` / quit (PR5)
+- [x] QMP helper for `send-key` / quit (PR5)
 - [ ] Optional guest hypercall (`0xFEE1DEAD`) for exit codes
-- [ ] Example smoke scripts for hobby kernels
+- [x] Example smoke scripts for hobby kernels
 - [ ] Optional MCP server for coding agents
 
 ## License

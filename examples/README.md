@@ -3,19 +3,19 @@
 | Script | Purpose |
 |--------|---------|
 | `minimal-ping.sh` | Ping a running plugin socket |
-| `munux-panic.sh` | Build plugin + run primary munux panic smoke |
-
-Primary automated guest check:
+| `munux-panic.sh` | One-shot `qemu-connect run` against munux panic screen |
 
 ```sh
-make smoke
-# or
 ./examples/munux-panic.sh
+# or
+make smoke
 ```
 
-CLI expect (against a live socket):
+QMP (separate from plugin socket):
 
 ```sh
-./build/qemu-connect --socket /tmp/qemu-connect.sock \
-  expect '*** munux KERNEL PANIC ***' --timeout 60000
+qemu-system-x86_64 ... -qmp unix:/tmp/q.qmp,server,nowait \
+  -plugin ./build/libqemu-connect.so,socket=/tmp/p.sock
+./build/qemu-connect --qmp /tmp/q.qmp qmp-ping
+./build/qemu-connect --qmp /tmp/q.qmp quit
 ```

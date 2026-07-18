@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * qemu-connect CLI — talk to the plugin control socket.
- *
- *   qemu-connect [--socket PATH] ping|version|get_console|expect|raw ...
+ * qemu-connect CLI — plugin control socket + QMP + run orchestration.
  */
 #define _POSIX_C_SOURCE 200809L
 #include "qemu-connect.h"
+#include "qmp.h"
+#include "run.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -20,9 +20,8 @@
 
 static void sleep_ms(int ms)
 {
-    struct timespec ts;
-    ts.tv_sec = ms / 1000;
-    ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+    struct timespec ts = { .tv_sec = ms / 1000,
+                           .tv_nsec = (long)(ms % 1000) * 1000000L };
     nanosleep(&ts, NULL);
 }
 
@@ -30,15 +29,16 @@ static int usage(const char *argv0)
 {
     fprintf(stderr,
             "Usage: %s [--socket PATH] <command> [args]\n"
-            "Commands:\n"
-            "  ping\n"
-            "  version\n"
-            "  get_console [--text-only] [--refresh]\n"
+            "Plugin socket commands:\n"
+            "  ping | version | get_console [--text-only] [--refresh]\n"
             "  expect <substring> [--timeout MS]\n"
             "  raw <json-line>\n"
+            "QMP commands (use --qmp PATH):\n"
+            "  qmp-ping | quit | key <qcode> | type <string>\n"
+            "Orchestration:\n"
+            "  run --iso PATH [--expect STR ...] ...\n"
             "\n"
-            "Default socket: %s\n"
-            "Default expect timeout: 30000 ms\n",
+            "Plugin default socket: %s\n",
             argv0, QEMU_CONNECT_DEFAULT_SOCK);
     return 2;
 }
@@ -69,7 +69,6 @@ static int request_buf(const char *path, const char *line, char *buf,
     if (fd < 0) {
         return 1;
     }
-
     char req[4096];
     snprintf(req, sizeof(req), "%s\n", line);
     if (write(fd, req, strlen(req)) < 0) {
@@ -77,7 +76,6 @@ static int request_buf(const char *path, const char *line, char *buf,
         close(fd);
         return 1;
     }
-
     size_t total = 0;
     while (total + 1 < buf_len) {
         ssize_t n = read(fd, buf + total, buf_len - 1 - total);
@@ -116,7 +114,6 @@ static int request(const char *path, const char *line)
     return 0;
 }
 
-/* Extract JSON string field "text":"..." into dst (unescaped). */
 static int extract_text_field(const char *json, char *dst, size_t dst_len)
 {
     const char *key = "\"text\":\"";
@@ -172,7 +169,7 @@ static int print_text_only(const char *json)
     char text[QEMU_CONNECT_VGA_COLS * QEMU_CONNECT_VGA_ROWS +
               QEMU_CONNECT_VGA_ROWS + 8];
     if (extract_text_field(json, text, sizeof(text)) != 0) {
-        fprintf(stderr, "get_console: no text field in response\n");
+        fprintf(stderr, "get_console: no text field\n");
         fputs(json, stderr);
         return 1;
     }
@@ -194,12 +191,10 @@ static int cmd_expect(const char *sock, const char *needle, int timeout_ms)
         fprintf(stderr, "expect: empty substring\n");
         return 2;
     }
-
     long long deadline = now_ms() + timeout_ms;
     char json[QEMU_CONNECT_RESP_MAX];
     char text[QEMU_CONNECT_VGA_COLS * QEMU_CONNECT_VGA_ROWS +
               QEMU_CONNECT_VGA_ROWS + 8];
-
     while (now_ms() < deadline) {
         if (request_buf(sock, "{\"cmd\":\"get_console\"}", json, sizeof(json),
                         NULL) != 0) {
@@ -216,35 +211,44 @@ static int cmd_expect(const char *sock, const char *needle, int timeout_ms)
         }
         sleep_ms(100);
     }
-
     fprintf(stderr, "expect: timeout after %d ms waiting for: %s\n", timeout_ms,
             needle);
-    /* Best-effort dump for agents */
-    if (request_buf(sock, "{\"cmd\":\"get_console\"}", json, sizeof(json),
-                    NULL) == 0) {
-        if (extract_text_field(json, text, sizeof(text)) == 0) {
-            fprintf(stderr, "--- last console ---\n%s\n", text);
+    return 1;
+}
+
+static const char *find_qmp_path(int argc, char **argv, int start,
+                                 const char *fallback)
+{
+    for (int j = start; j < argc; j++) {
+        if (strcmp(argv[j], "--qmp") == 0 && j + 1 < argc) {
+            return argv[j + 1];
         }
     }
-    return 1;
+    return fallback;
 }
 
 int main(int argc, char **argv)
 {
     const char *sock = QEMU_CONNECT_DEFAULT_SOCK;
+    const char *qmp_path = NULL;
     int i = 1;
 
     if (argc < 2) {
         return usage(argv[0]);
     }
 
-    /* Global optional --socket before command */
-    if (strcmp(argv[i], "--socket") == 0) {
-        if (argc < 4) {
-            return usage(argv[0]);
+    while (i < argc) {
+        if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
+            sock = argv[i + 1];
+            i += 2;
+            continue;
         }
-        sock = argv[i + 1];
-        i += 2;
+        if (strcmp(argv[i], "--qmp") == 0 && i + 1 < argc) {
+            qmp_path = argv[i + 1];
+            i += 2;
+            continue;
+        }
+        break;
     }
 
     if (i >= argc) {
@@ -252,6 +256,10 @@ int main(int argc, char **argv)
     }
 
     const char *cmd = argv[i];
+
+    if (strcmp(cmd, "run") == 0) {
+        return qc_cmd_run(argc - (i + 1), argv + i + 1);
+    }
 
     if (strcmp(cmd, "ping") == 0) {
         return request(sock, "{\"cmd\":\"ping\"}");
@@ -271,9 +279,9 @@ int main(int argc, char **argv)
                 sock = argv[++j];
             }
         }
-        const char *line =
-            refresh ? "{\"cmd\":\"get_console\",\"refresh\":true}"
-                    : "{\"cmd\":\"get_console\"}";
+        const char *line = refresh
+                               ? "{\"cmd\":\"get_console\",\"refresh\":true}"
+                               : "{\"cmd\":\"get_console\"}";
         if (!text_only) {
             return request(sock, line);
         }
@@ -281,7 +289,6 @@ int main(int argc, char **argv)
         if (request_buf(sock, line, buf, sizeof(buf), NULL) != 0) {
             return 1;
         }
-        /* refresh errors have no text field */
         if (strstr(buf, "\"ok\":false")) {
             fputs(buf, stderr);
             return 1;
@@ -312,6 +319,58 @@ int main(int argc, char **argv)
         }
         return request(sock, argv[i + 1]);
     }
+
+    /* ---- QMP commands ---- */
+    if (strcmp(cmd, "qmp-ping") == 0 || strcmp(cmd, "quit") == 0 ||
+        strcmp(cmd, "key") == 0 || strcmp(cmd, "type") == 0) {
+        const char *qp = qmp_path ? qmp_path
+                                  : find_qmp_path(argc, argv, i + 1, NULL);
+        if (!qp) {
+            fprintf(stderr, "%s requires --qmp PATH\n", cmd);
+            return 2;
+        }
+        qc_qmp_t *q = qc_qmp_connect(qp);
+        if (!q) {
+            return 1;
+        }
+        int rc = 0;
+        char out[2048];
+        if (strcmp(cmd, "qmp-ping") == 0) {
+            rc = qc_qmp_execute(q, "{\"execute\":\"query-status\"}", out,
+                                sizeof(out));
+            if (rc == 0) {
+                puts(out);
+            } else {
+                fprintf(stderr, "qmp-ping failed: %s\n", out);
+            }
+        } else if (strcmp(cmd, "quit") == 0) {
+            rc = qc_qmp_quit(q);
+            if (rc == 0) {
+                fprintf(stderr, "qmp: quit ok\n");
+            }
+        } else if (strcmp(cmd, "key") == 0) {
+            if (i + 1 >= argc) {
+                qc_qmp_close(q);
+                return usage(argv[0]);
+            }
+            rc = qc_qmp_send_key(q, argv[i + 1]);
+            if (rc != 0) {
+                fprintf(stderr, "key failed\n");
+            }
+        } else if (strcmp(cmd, "type") == 0) {
+            if (i + 1 >= argc) {
+                qc_qmp_close(q);
+                return usage(argv[0]);
+            }
+            rc = qc_qmp_type(q, argv[i + 1], 20);
+            if (rc != 0) {
+                fprintf(stderr, "type failed\n");
+            }
+        }
+        qc_qmp_close(q);
+        return rc == 0 ? 0 : 1;
+    }
+
     if (strcmp(cmd, "help") == 0 || strcmp(cmd, "-h") == 0 ||
         strcmp(cmd, "--help") == 0) {
         return usage(argv[0]);

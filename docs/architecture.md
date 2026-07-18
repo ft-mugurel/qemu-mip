@@ -125,3 +125,15 @@ server thread                     vCPU (tb_trans / tb_exec / idle)
 ```
 
 Default `get_console` stays **shadow-only** and never waits on this queue.
+
+## QMP (PR5)
+
+Keyboard injection and clean shutdown use QEMU's **QMP** channel, not the
+plugin socket:
+
+```text
+CLI --qmp /path.qmp  →  QMP (keys, quit, query-status)
+CLI --socket /path   →  plugin (console, expect, ping)
+```
+
+`qemu-connect run` opens both and prefers `quit` over `kill -9`.
