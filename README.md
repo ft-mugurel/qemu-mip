@@ -1,32 +1,46 @@
 # qemu-connect
 
-**Agent-facing control plane for QEMU guests**: out-of-tree **TCG plugin** + host
-CLI. Coding agents can boot a kernel, **read the VGA console**, and **type shell
-commands** without a human watching a window.
+Boot a kernel in QEMU, **read the screen**, and **type shell commands** — from a script or an AI agent. No GUI required.
 
-> Status: usable end-to-end for munux (shell, disk, `guest` helper).  
-> Protocol **0.4**. Optional later: packaging polish (PR9).
+Built as a **QEMU TCG plugin** (`.so`) plus a small **CLI**, with an optional **MCP** server for tool-calling hosts.
 
-**For AI agents:** **[AGENTS.md](AGENTS.md)** — start there.  
-Grok skill: `.grok/skills/qemu-connect/` (`/qemu-connect`).
+| | |
+|--|--|
+| **Repo** | [github.com/ft-mugurel/qemu-mip](https://github.com/ft-mugurel/qemu-mip) |
+| **Latest** | See tags (`v1.0` CLI baseline, newer tags include MCP) |
+| **Agents** | Start at **[AGENTS.md](AGENTS.md)** |
 
-## Why
+---
 
-| Approach | Shareable | Guest changes | Agent-friendly |
-|----------|-----------|---------------|----------------|
-| Compile only | — | — | Blind after link |
-| Serial + expect | Yes | Often need UART | Weak on VGA-only kernels |
-| **qemu-connect** | **`.so` + CLI** | **Optional** | **VGA scrape + keys** |
+## What it does
 
-Plugin = **eyes** (console / status / mem_read).  
-QMP = **hands** (type keys / quit).  
-`guest` / `run` wire both for you.
+```text
+You / AI agent
+    →  qemu-connect guest help
+    →  QEMU + plugin + munux
+    →  console text + exit 0/1
+```
 
-## Requirements
+- **Eyes:** scrape classic VGA text (`0xB8000`) inside the guest  
+- **Hands:** type keys via QMP  
+- **Simple path:** one command — `guest`  
+- **AI path:** same CLI, or MCP tools (`qemu_guest`, `qemu_run`, …)
 
-- QEMU with **plugins** (`-plugin`; QEMU ≥ 8, **11** tested)
-- **TCG** for plugin path (not KVM)
-- `gcc`, `make`, `pkg-config`, **glib-2.0**, `qemu-plugin.h`
+Compile-only is not enough for kernels. This closes that gap.
+
+---
+
+## Install / build
+
+**Needs:** QEMU with plugins (TCG), `gcc`, `make`, glib, `qemu-plugin.h`  
+Optional for MCP: Node.js 18+
+
+```sh
+git clone git@github.com:ft-mugurel/qemu-mip.git
+cd qemu-mip   # local folder may be named qemu-connect
+
+make                  # → build/libqemu-connect.so + build/qemu-connect
+```
 
 ```sh
 # Arch
@@ -36,47 +50,58 @@ sudo pacman -S qemu-system-x86 base-devel glib2
 sudo apt install qemu-system-x86 build-essential libglib2.0-dev
 ```
 
-## Build
-
-```sh
-make              # build/libqemu-connect.so + build/qemu-connect
-make plugin cli
-make clean
-```
+---
 
 ## Quick start (munux)
 
 ```sh
-# optional: git clone git@github.com:ft-mugurel/munux.git test/munux
-make plugin cli
+# Guest kernel (once)
+git clone git@github.com:ft-mugurel/munux.git test/munux
 make -C test/munux iso disk
 
-./build/qemu-connect guest              # boot → show console
-./build/qemu-connect guest help         # type a command
+# Tool
+make plugin cli
+
+# Boot and show the screen
+./build/qemu-connect guest
+
+# Type a shell command
+./build/qemu-connect guest help
 ./build/qemu-connect guest ls
-make guest CMD='cat hello.txt'
+./build/qemu-connect guest cat hello.txt
+
+# Same via make
+make guest
+make guest CMD=help
 ```
 
-That’s the whole agent loop: **build → guest → exit 0**.
-
-### Example success
+**Success:** process exit code **0**, console shows `munux>` (and your command output).
 
 ```text
 $ ./build/qemu-connect guest help
-run: wait for munux>
-run: type help
--------- guest console --------
 …
 munux> help
 munux shell commands:
   help            This list
+  about           Kernel summary
   …
 munux>
--------------------------------
-{"ok":true,"duration_ms":1165,"exit_code":0}
+{"ok":true,"exit_code":0}
 ```
 
-## `run` (custom steps)
+---
+
+## Commands
+
+### `guest` — simplest (recommended)
+
+```sh
+./build/qemu-connect guest [shell words…]
+```
+
+Boots munux (ISO + disk), waits for `munux>`, types the command if given, prints the console, quits QEMU.
+
+### `run` — custom steps
 
 ```sh
 ./build/qemu-connect run \
@@ -91,81 +116,101 @@ munux>
 |------|---------|
 | `--iso` | CD image |
 | `--disk` | IDE disk |
-| `--expect TEXT` | Wait for console text (ordered) |
-| `--type TEXT` | Type + Enter (ordered) |
-| `--show` | Print console when done |
-| `--timeout MS` | Per-expect timeout |
+| `--expect TEXT` | Wait until console contains TEXT |
+| `--type TEXT` | Type TEXT, then Enter |
+| `--show` | Print console at the end |
+| `--timeout MS` | Per-expect timeout (default 60000) |
 
-## Plugin arguments
+### Other CLI
 
-| Arg | Default | Meaning |
-|-----|---------|---------|
-| `socket=PATH` | `/tmp/qemu-connect.sock` | Control socket |
-| `socket_thread=on\|off` | `on` | Poll thread (works while guest idle) |
-| `vga=on\|off` | `on` | Scrape VGA text at `0xB8000` |
-| `vga_refresh=on\|off` | `on` | Allow `get_console` `refresh:true` |
-| `vcpu_queue_timeout_ms=N` | `250` | Wait for mem_read/refresh |
-| `hypercall=on\|off` | `on` | Optional guest window at `0xFEE1DEAD` |
-
-You rarely need these when using **`guest`**.
-
-## Layout
-
-```text
-.
-├── AGENTS.md           # AI agent instructions (read this)
-├── plugin/             # → libqemu-connect.so
-├── cli/                # → qemu-connect (guest, run, QMP, …)
-├── docs/               # architecture, protocol, munux snippet
-├── examples/
-├── test/               # local munux clone (gitignored)
-└── .grok/skills/       # Grok /qemu-connect skill
+```sh
+./build/qemu-connect ping|version|status     # against a live plugin socket
+./build/qemu-connect expect 'munux>' --timeout 60000
+./build/qemu-connect --qmp /path.qmp quit    # clean power-off
 ```
 
-## Protocol
+### Exit codes (`guest` / `run`)
 
-Line-oriented JSON over a Unix socket — see **[docs/protocol.md](docs/protocol.md)** (v0.4).
+| Code | Meaning |
+|-----:|---------|
+| 0 | OK |
+| 1 | Expect/type failed |
+| 2 | Missing ISO/disk or bad usage |
+| 3 | QEMU crashed |
+| 4 | Plugin/QMP connect failed |
+
+---
+
+## MCP (for Cursor, Claude Desktop, …)
+
+Optional layer: the model calls **tools** instead of inventing shell lines.
+
+```sh
+cd mcp && npm install && npm run build
+./scripts/mcp-smoke.sh          # optional self-test
+```
+
+| Tool | Does |
+|------|------|
+| `qemu_connect_info` | Paths / binaries present? |
+| `qemu_build_guest` | Build plugin + munux ISO/disk |
+| `qemu_guest` | Same as `guest` |
+| `qemu_run` | Same as `run` |
+
+Host config: [mcp/mcp.example.json](mcp/mcp.example.json) and [mcp/README.md](mcp/README.md).
+
+---
+
+## How it works (short)
 
 ```text
-→ {"cmd":"ping"}
-← {"ok":true,"result":{"pong":true,"proto":"0.4",…}}
+CLI / MCP
+  ├─ plugin socket  →  VGA scrape, status, mem_read
+  └─ QMP socket     →  keyboard, quit
+         ↓
+   QEMU (TCG) + guest kernel
 ```
+
+You almost never need plugin flags when using `guest`. Details: [docs/architecture.md](docs/architecture.md), [docs/protocol.md](docs/protocol.md).
+
+---
+
+## Project layout
+
+```text
+plugin/     QEMU TCG plugin → libqemu-connect.so
+cli/        Host CLI → qemu-connect
+mcp/        MCP server (Node/TypeScript)
+docs/       Architecture & protocol
+AGENTS.md   Instructions for coding agents
+test/       Local munux clone (gitignored)
+```
+
+---
 
 ## Tests
 
 ```sh
 make test-ping
 make guest CMD=help
-make smoke          # broader suite when munux is present
+make smoke                 # broader suite if test/munux exists
+./scripts/mcp-smoke.sh     # MCP tools end-to-end
 ```
 
-## MCP (experimental)
-
-Thin MCP server wrapping this CLI — see **[mcp/README.md](mcp/README.md)**.
-
-```sh
-cd mcp && npm install && npm run build
-./scripts/mcp-smoke.sh   # prove all MCP tools
-# point Cursor/Claude at mcp/dist/index.js (see mcp/mcp.example.json)
-```
+---
 
 ## Docs
 
-| Doc | Content |
-|-----|---------|
-| [AGENTS.md](AGENTS.md) | **Agent workflow** |
+| Doc | For |
+|-----|-----|
+| **[AGENTS.md](AGENTS.md)** | AI agents (read this) |
+| [mcp/README.md](mcp/README.md) | MCP setup |
 | [docs/architecture.md](docs/architecture.md) | Design |
-| [docs/protocol.md](docs/protocol.md) | Wire protocol |
-| [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) | Historical PR plan |
+| [docs/protocol.md](docs/protocol.md) | JSON control protocol |
 | [test/README.md](test/README.md) | munux under `test/` |
+
+---
 
 ## License
 
-**GPL-2.0-or-later** (compatible with `qemu-plugin.h`).
-
-## Remote
-
-```sh
-git remote add origin git@github.com:ft-mugurel/qemu-mip.git
-git push -u origin main
-```
+**GPL-2.0-or-later** (compatible with QEMU’s `qemu-plugin.h`).
