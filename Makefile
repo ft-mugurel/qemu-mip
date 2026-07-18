@@ -32,7 +32,7 @@ CLI_OBJS       := $(BUILD_DIR)/cli_main.o $(BUILD_DIR)/cli_qmp.o $(BUILD_DIR)/cl
 VGA_UNIT_OBJS  := $(BUILD_DIR)/vga.o $(BUILD_DIR)/test_vga_unit.o
 
 .PHONY: all plugin cli guest clean dirs help test-load test-ping test-vga-unit \
-	test-munux-iso test-munux-console test-munux-panic test-refresh \
+	test-munux-iso test-munux-console test-munux-shell test-refresh \
 	test-qmp test-run test-mem-hypercall smoke
 
 all: plugin cli
@@ -40,8 +40,9 @@ all: plugin cli
 help:
 	@echo "qemu-connect targets:"
 	@echo "  all / plugin / cli"
+	@echo "  guest [CMD=help]     simple munux boot/type/show"
 	@echo "  test-ping test-vga-unit test-qmp test-run test-mem-hypercall"
-	@echo "  test-munux-panic test-refresh smoke"
+	@echo "  test-munux-shell test-refresh smoke"
 
 dirs:
 	@mkdir -p $(BUILD_DIR)
@@ -107,10 +108,10 @@ test-munux-iso:
 	@if [ ! -d test/munux ]; then echo "SKIP munux"; exit 0; fi
 	@$(MAKE) -C test/munux iso
 
-test-munux-panic: plugin cli
-	@bash scripts/test-munux-panic.sh
+test-munux-shell: plugin cli
+	@bash scripts/test-munux-shell.sh
 
-test-munux-console: test-munux-panic
+test-munux-console: test-munux-shell
 
 test-refresh: plugin cli
 	@bash scripts/test-refresh.sh
@@ -123,7 +124,7 @@ guest: plugin cli
 
 smoke: test-ping test-vga-unit test-qmp
 	@if [ -d test/munux ]; then \
-		$(MAKE) test-munux-panic && $(MAKE) test-refresh && $(MAKE) test-run && $(MAKE) test-mem-hypercall; \
+		$(MAKE) test-munux-shell && $(MAKE) test-refresh && $(MAKE) test-run && $(MAKE) test-mem-hypercall; \
 	else \
 		echo "SKIP munux"; \
 	fi

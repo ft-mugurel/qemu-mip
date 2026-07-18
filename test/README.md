@@ -1,7 +1,7 @@
 # Test guests
 
 Kernel trees used while developing **qemu-connect**. Nested clones under
-`test/*/` are **gitignored** (see root `.gitignore`).
+`test/*/` are **gitignored**.
 
 ## munux
 
@@ -9,17 +9,30 @@ Kernel trees used while developing **qemu-connect**. Nested clones under
 git clone git@github.com:ft-mugurel/munux.git test/munux
 ```
 
-### Make targets (from repo root)
+### Simple checks (from repo root)
+
+```sh
+make plugin cli
+make -C test/munux iso disk
+
+./build/qemu-connect guest              # boot + console
+./build/qemu-connect guest help
+make guest CMD=ls
+```
+
+### Make targets
 
 | Target | What it does |
 |--------|----------------|
-| `make test-munux-iso` | `make -C test/munux iso` |
-| `make test-munux-panic` | Boot ISO + plugin; `expect` panic strings |
-| `make test-refresh` | Shadow after halt + `refresh` timeout |
-| `make smoke` | ping + vga-unit + panic + refresh |
+| `make guest` / `CMD=…` | One-shot munux boot/type/show |
+| `make test-munux-iso` | Build munux ISO |
+| `make test-munux-shell` | Expect `munux>` shell ready |
+| `make smoke` | Unit/QMP + munux shell checks when present |
 
-Primary assertions (current munux end-state):
+### Success markers (current munux U6+)
 
-1. `*** munux KERNEL PANIC ***`
-2. `Invalid opcode` / `#UD`
-3. `System halted.`
+1. `munux shell ready`
+2. Prompt **`munux>`**
+3. Optional: `guest help` shows `munux shell commands:`
+
+Needs **ISO + disk.img** (ext2 rootfs).

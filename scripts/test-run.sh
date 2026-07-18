@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PR6: one-shot run against munux panic strings.
+# run helper with disk + shell expects + type help
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CLI="$ROOT/build/qemu-connect"
@@ -11,14 +11,16 @@ if [[ ! -d "$MUNUX" ]]; then
   exit 0
 fi
 
-make -C "$MUNUX" iso >/dev/null
-ISO="$MUNUX/build/kernel.iso"
+make -C "$ROOT" plugin cli
+make -C "$MUNUX" iso disk >/dev/null
 
 out=$("$CLI" run \
-  --iso "$ISO" \
+  --iso "$MUNUX/build/kernel.iso" \
+  --disk "$MUNUX/build/disk.img" \
   --plugin "$PLUGIN" \
-  --expect '*** munux KERNEL PANIC ***' \
-  --expect 'System halted.' \
+  --expect 'munux>' \
+  --type help \
+  --show \
   --timeout 60000)
 echo "$out"
 echo "$out" | grep -q '"ok":true' || { echo "FAIL run summary"; exit 1; }

@@ -1,35 +1,64 @@
 ---
 name: qemu-connect
 description: >
-  Verify freestanding kernels under QEMU with qemu-connect (guest/run helpers).
-  Use for munux/KFS boot tests, shell commands under QEMU, "does it boot",
-  runtime checks after kernel edits, or /qemu-connect. Prefer guest over raw QEMU flags.
+  Verify freestanding kernels under QEMU with qemu-connect. Prefer the simple
+  `guest` helper (boot munux, type shell commands, print console). Use for
+  munux/KFS, boot tests, shell under QEMU, "does it boot", runtime checks after
+  kernel edits, make guest, or /qemu-connect. Never treat compile-only as success.
 ---
 
-# qemu-connect skill
+# qemu-connect
 
 ## Rule
 
-**Compile ≠ works.** Use:
+**Compile ≠ works.** After kernel/boot/shell/FS changes, run a guest check with **exit 0**.
+
+## Default commands (preferred)
+
+From the **qemu-connect** repo root:
 
 ```sh
 make plugin cli
-make -C test/munux iso disk   # if needed
+make -C test/munux iso disk    # when kernel or rootfs changed
+
 ./build/qemu-connect guest              # boot + show console
 ./build/qemu-connect guest help         # type help
 ./build/qemu-connect guest ls
+./build/qemu-connect guest cat hello.txt
+
+make guest
+make guest CMD=help
 ```
 
-Or: `make guest` / `make guest CMD=help`
+- Console text → **stderr**
+- JSON summary → **stdout** (`"ok":true`, `"exit_code":0`)
+- Prompt to wait for: **`munux>`** (not `kfs>`, not KERNEL PANIC)
 
-Exit **0** required. Console is printed on stderr; JSON summary on stdout.
+## Exit codes
 
-## Full control
+| Code | Meaning |
+|-----:|---------|
+| 0 | Pass |
+| 1 | expect/type failed |
+| 2 | missing ISO/disk |
+| 3 | QEMU crash |
+| 4 | connect failed |
+
+## Custom scripts
 
 ```sh
-./build/qemu-connect run --iso … --disk … --expect 'munux>' --type help --show
+./build/qemu-connect run \
+  --iso test/munux/build/kernel.iso \
+  --disk test/munux/build/disk.img \
+  --expect 'munux>' \
+  --type help \
+  --show
 ```
 
-## munux baseline
+## Do not
 
-Expect **`munux>`** shell (not KERNEL PANIC). See root `AGENTS.md`.
+- Hand-assemble long QEMU CLI for normal verification
+- Use interactive GUI as the agent test
+- Gate on obsolete panic-era strings
+
+Full detail: root **`AGENTS.md`**.

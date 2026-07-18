@@ -2,20 +2,17 @@
 
 | Script | Purpose |
 |--------|---------|
-| `minimal-ping.sh` | Ping a running plugin socket |
-| `munux-panic.sh` | One-shot `qemu-connect run` against munux panic screen |
+| `munux-guest.sh` | Thin wrapper around `qemu-connect guest` |
+| `minimal-ping.sh` | Ping a *already running* plugin socket |
 
 ```sh
-./examples/munux-panic.sh
-# or
-make smoke
+# Preferred
+./examples/munux-guest.sh
+./examples/munux-guest.sh help
+./examples/munux-guest.sh ls
+
+# Same thing
+make guest CMD=help
 ```
 
-QMP (separate from plugin socket):
-
-```sh
-qemu-system-x86_64 ... -qmp unix:/tmp/q.qmp,server,nowait \
-  -plugin ./build/libqemu-connect.so,socket=/tmp/p.sock
-./build/qemu-connect --qmp /tmp/q.qmp qmp-ping
-./build/qemu-connect --qmp /tmp/q.qmp quit
-```
+You do **not** need to build QEMU command lines by hand for normal tests.
