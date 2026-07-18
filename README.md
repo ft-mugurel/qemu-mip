@@ -24,6 +24,8 @@ See [docs/architecture.md](docs/architecture.md).
 
 **Implementation plan:** [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) (PR-ordered roadmap).
 
+**For AI agents:** start at **[AGENTS.md](AGENTS.md)** (mandatory runtime checks). Grok skill: `.grok/skills/qemu-connect/` (`/qemu-connect`).
+
 ## Requirements
 
 - QEMU built with **plugins** (`-plugin` works; QEMU **≥ 8** recommended, **11** tested)
