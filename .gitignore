@@ -26,3 +26,7 @@
 # Local test guests (cloned kernels; keep test/README.md)
 /test/*/
 !/test/README.md
+
+# MCP (Node)
+/mcp/node_modules/
+/mcp/dist/

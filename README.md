@@ -139,6 +139,15 @@ make guest CMD=help
 make smoke          # broader suite when munux is present
 ```
 
+## MCP (experimental)
+
+Thin MCP server wrapping this CLI — see **[mcp/README.md](mcp/README.md)**.
+
+```sh
+cd mcp && npm install && npm run build
+# point Cursor/Claude at mcp/dist/index.js (see mcp/mcp.example.json)
+```
+
 ## Docs
 
 | Doc | Content |

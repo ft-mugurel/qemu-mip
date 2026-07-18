@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "qemu-connect": {
+      "command": "node",
+      "args": [
+        "/home/mtu/MTU/xAI/trace/qemu-connect/mcp/dist/index.js"
+      ],
+      "env": {
+        "QEMU_CONNECT_ROOT": "/home/mtu/MTU/xAI/trace/qemu-connect"
+      }
+    }
+  }
+}
