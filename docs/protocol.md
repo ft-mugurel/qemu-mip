@@ -6,6 +6,17 @@ request/response.
 Default path: `/tmp/qemu-connect.sock`  
 Override: `-plugin …,socket=/path/to.sock`
 
+
+## Framing (PR1)
+
+- Transport: Unix stream socket
+- One JSON object **per line**, terminated by `\n` (optional `\r` stripped)
+- Maximum request line: **8192** bytes (not counting the terminator)
+- One response line per request; clients should wait for the response before sending another line
+- Partial writes that eventually form a full line are supported (accumulator)
+- A line longer than the limit (or 8192 bytes without `\n`) causes the server to **drop the client**
+
+
 ## Request
 
 ```json

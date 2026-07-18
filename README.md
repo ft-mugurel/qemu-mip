@@ -6,8 +6,8 @@
 Coding agents can boot a kernel under QEMU and **observe / drive** it without a
 human watching the VGA window — and without forking QEMU.
 
-> Status: **scaffold / v0.1** — loads, opens a Unix control socket, answers
-> `ping` / `version`. VGA capture and full smoke automation come next.
+> Status: **PR1** — dedicated control-socket **thread**, line framing, `make test-ping`.
+> Next: VGA scrape (PR2), munux panic smoke (PR4).
 
 ## Why a plugin?
 
@@ -65,6 +65,7 @@ Plugin arguments:
 | Arg | Default | Meaning |
 |-----|---------|---------|
 | `socket=PATH` | `/tmp/qemu-connect.sock` | Unix domain control socket |
+| `socket_thread=on\|off` | `on` | Dedicated poll thread (needed while guest is idle/`hlt`) |
 
 ## Layout
 
@@ -94,6 +95,7 @@ Line-oriented JSON over the Unix socket. See [docs/protocol.md](docs/protocol.md
 ## Roadmap
 
 - [x] Repo skeleton, plugin load, control socket, CLI `ping`
+- [x] Dedicated socket thread + framing + `make test-ping` (PR1)
 - [ ] Instrument stores to VGA text RAM (`0xB8000`) → real `get_console`
 - [ ] `expect` / timeout helpers in CLI
 - [ ] QMP helper for `send-key` / quit

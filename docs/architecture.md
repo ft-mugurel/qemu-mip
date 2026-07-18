@@ -63,3 +63,32 @@ Plugins are **not** a first-class virtual keyboard/UART.
 
 Optional magic physical address `0xFEE1DEAD` for structured guest→host
 messages (`AGENT_READY`, `AGENT_EXIT`, …) without requiring serial.
+
+## Control socket (PR1)
+
+The plugin opens a **Unix domain stream socket** on the host (default
+`/tmp/qemu-connect.sock`, override with `socket=PATH`).
+
+### Thread model
+
+| Mode | Plugin arg | Behavior |
+|------|------------|----------|
+| **Default** | `socket_thread=on` | Dedicated **pthread** runs `poll()` on the listen (and client) FDs. Agents can `ping` even if the guest is in `hlt` / not translating any code. |
+| Fallback | `socket_thread=off` | No thread; `qc_server_poll()` is driven from a TB-translate callback. Only useful for debugging; **not** reliable under idle/halt. |
+
+Unload order: set stop flag → `shutdown`/`close` FDs (wakes `poll`) → `pthread_join` → free server state.
+
+### Framing
+
+- One JSON object per line (UTF-8), newline-terminated.
+- Max line length: **8192** bytes; oversized lines without `\n` close the client.
+- Sequential request/response; no pipelining required from clients.
+- After `bind`, the socket path is `chmod` **0600** (best-effort).
+
+### Plugin load example
+
+```bash
+qemu-system-x86_64 -display none -machine none -accel tcg \
+  -plugin ./build/libqemu-connect.so,socket=/tmp/qemu-connect.sock,socket_thread=on
+./build/qemu-connect --socket /tmp/qemu-connect.sock ping
+```
