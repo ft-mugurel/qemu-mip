@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <pthread.h>
 
 #include "qemu-connect.h"
 
@@ -13,12 +14,22 @@ typedef struct {
     char text[QEMU_CONNECT_VGA_COLS * QEMU_CONNECT_VGA_ROWS];
     uint64_t write_count;
     bool dirty;
+    pthread_mutex_t lock;
 } qc_vga_state_t;
 
 void qc_vga_init(qc_vga_state_t *s);
+void qc_vga_destroy(qc_vga_state_t *s);
+
+/* Apply a store of @size bytes of @value (host-endian LE payload) at @hwaddr. */
 void qc_vga_note_store(qc_vga_state_t *s, uint64_t hwaddr, uint64_t value,
                        unsigned size);
-/* Copy current text into out (NUL-terminated, rows separated by '\n'). */
-size_t qc_vga_snapshot_text(const qc_vga_state_t *s, char *out, size_t out_len);
+
+/*
+ * Copy current text into out (NUL-terminated, rows separated by '\n').
+ * Clears dirty. Thread-safe.
+ */
+size_t qc_vga_snapshot_text(qc_vga_state_t *s, char *out, size_t out_len);
+
+uint64_t qc_vga_write_count(qc_vga_state_t *s);
 
 #endif

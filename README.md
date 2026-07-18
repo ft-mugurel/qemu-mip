@@ -6,8 +6,8 @@
 Coding agents can boot a kernel under QEMU and **observe / drive** it without a
 human watching the VGA window — and without forking QEMU.
 
-> Status: **PR1** — dedicated control-socket **thread**, line framing, `make test-ping`.
-> Next: VGA scrape (PR2), munux panic smoke (PR4).
+> Status: **PR2** — VGA text scrape at `0xB8000`, real `get_console` text, `make test-munux-console`.
+> Next: munux panic smoke/`expect` (PR4), optional refresh (PR3).
 
 ## Why a plugin?
 
@@ -66,6 +66,7 @@ Plugin arguments:
 |-----|---------|---------|
 | `socket=PATH` | `/tmp/qemu-connect.sock` | Unix domain control socket |
 | `socket_thread=on\|off` | `on` | Dedicated poll thread (needed while guest is idle/`hlt`) |
+| `vga=on\|off` | `on` | Instrument stores to scrape VGA text at `0xB8000` |
 
 ## Layout
 
@@ -73,8 +74,9 @@ Plugin arguments:
 .
 ├── plugin/           # TCG plugin sources → libqemu-connect.so
 │   ├── agent.c       # qemu_plugin_install entry
-│   ├── vga.c         # VGA text shadow (scaffold)
-│   ├── server.c      # Unix socket server
+│   ├── mem.c         # store callbacks → VGA scrape
+│   ├── vga.c         # VGA text shadow (+ mutex)
+│   ├── server.c      # Unix socket server (thread)
 │   └── protocol.c    # request/response handlers
 ├── cli/              # Host CLI → qemu-connect
 ├── include/          # Shared headers / protocol constants
@@ -96,7 +98,7 @@ Line-oriented JSON over the Unix socket. See [docs/protocol.md](docs/protocol.md
 
 - [x] Repo skeleton, plugin load, control socket, CLI `ping`
 - [x] Dedicated socket thread + framing + `make test-ping` (PR1)
-- [ ] Instrument stores to VGA text RAM (`0xB8000`) → real `get_console`
+- [x] Instrument stores to VGA text RAM (`0xB8000`) → real `get_console` (PR2)
 - [ ] `expect` / timeout helpers in CLI
 - [ ] QMP helper for `send-key` / quit
 - [ ] Optional guest hypercall (`0xFEE1DEAD`) for exit codes

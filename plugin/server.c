@@ -92,7 +92,7 @@ static void handle_complete_line(qc_server_t *srv)
     }
     srv->line_buf[n] = '\0';
 
-    char resp[8192];
+    char resp[QEMU_CONNECT_RESP_MAX];
     qc_protocol_handle(srv->line_buf, srv->vga, resp, sizeof(resp));
 
     size_t rlen = strlen(resp);

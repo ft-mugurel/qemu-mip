@@ -92,3 +92,21 @@ qemu-system-x86_64 -display none -machine none -accel tcg \
   -plugin ./build/libqemu-connect.so,socket=/tmp/qemu-connect.sock,socket_thread=on
 ./build/qemu-connect --socket /tmp/qemu-connect.sock ping
 ```
+
+## VGA text scrape (PR2)
+
+Classic PC text mode lives at physical **`0xB8000`**: 80×25 cells, 2 bytes each
+(`char` + attribute). Hobby kernels (including munux) write this region with
+normal stores (often `u16` cells).
+
+The plugin, on every translation block:
+
+1. Registers a **store** memory callback on each instruction.
+2. At runtime, if the store’s **physical** address falls in the VGA window,
+   updates a host-side **shadow** of the character bytes (mutex-protected).
+3. `get_console` returns that shadow as JSON (`source:"shadow"`).
+
+**Important:** do **not** ignore `qemu_plugin_hwaddr_is_io()` — VGA may be
+device memory and still be a valid text buffer.
+
+Plugin arg `vga=off` disables instrumentation (shadow stays blank/spaces).
