@@ -31,7 +31,7 @@ PLUGIN_OBJS    := $(patsubst $(PLUGIN_DIR)/%.c,$(BUILD_DIR)/%.o,$(PLUGIN_SRCS))
 CLI_OBJS       := $(BUILD_DIR)/cli_main.o $(BUILD_DIR)/cli_qmp.o $(BUILD_DIR)/cli_run.o
 VGA_UNIT_OBJS  := $(BUILD_DIR)/vga.o $(BUILD_DIR)/test_vga_unit.o
 
-.PHONY: all plugin cli clean dirs help test-load test-ping test-vga-unit \
+.PHONY: all plugin cli guest clean dirs help test-load test-ping test-vga-unit \
 	test-munux-iso test-munux-console test-munux-panic test-refresh \
 	test-qmp test-run test-mem-hypercall smoke
 
@@ -114,6 +114,12 @@ test-munux-console: test-munux-panic
 
 test-refresh: plugin cli
 	@bash scripts/test-refresh.sh
+
+# Simple: make guest CMD='help'
+guest: plugin cli
+	@if [ ! -f test/munux/build/kernel.iso ] || [ ! -f test/munux/build/disk.img ]; then \
+		$(MAKE) -C test/munux iso disk; fi
+	@./$(BUILD_DIR)/$(CLI_NAME) guest $(CMD)
 
 smoke: test-ping test-vga-unit test-qmp
 	@if [ -d test/munux ]; then \

@@ -261,6 +261,9 @@ int main(int argc, char **argv)
     if (strcmp(cmd, "run") == 0) {
         return qc_cmd_run(argc - (i + 1), argv + i + 1);
     }
+    if (strcmp(cmd, "guest") == 0) {
+        return qc_cmd_guest(argc - (i + 1), argv + i + 1);
+    }
 
     if (strcmp(cmd, "ping") == 0) {
         return request(sock, "{\"cmd\":\"ping\"}");

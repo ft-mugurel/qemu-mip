@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * qemu-connect run — spawn QEMU + plugin + QMP, run expects, tear down.
+ * qemu-connect run / guest — spawn QEMU + plugin + QMP, script steps, tear down.
  */
 #define _POSIX_C_SOURCE 200809L
 #include "run.h"
@@ -24,7 +24,15 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MAX_EXPECTS 32
+#define MAX_STEPS 64
+
+typedef enum { STEP_EXPECT, STEP_TYPE } step_kind_t;
+
+typedef struct {
+    step_kind_t kind;
+    const char *arg;
+    bool ok;
+} step_t;
 
 static void sleep_ms(int ms)
 {
@@ -149,74 +157,75 @@ static int wait_expect(const char *psock, const char *needle, int timeout_ms)
     return -1;
 }
 
-static void usage(void)
+static void print_console(const char *psock)
 {
-    fprintf(stderr,
-            "Usage: qemu-connect run --iso PATH [options]\n"
-            "  --iso PATH              Guest ISO (required)\n"
-            "  --plugin PATH           libqemu-connect.so (default: build/libqemu-connect.so)\n"
-            "  --mem SIZE              QEMU -m (default: 512M)\n"
-            "  --expect STR            Assert console contains STR (repeatable)\n"
-            "  --timeout MS            Per-expect timeout (default: 60000)\n"
-            "  --qemu PATH             qemu-system binary (default: qemu-system-x86_64)\n"
-            "\n"
-            "Exit: 0 ok, 1 expect fail, 2 missing iso/usage, 3 qemu crash, 4 connect fail\n");
+    char json[QEMU_CONNECT_RESP_MAX];
+    char text[QEMU_CONNECT_VGA_COLS * QEMU_CONNECT_VGA_ROWS +
+              QEMU_CONNECT_VGA_ROWS + 8];
+    if (plugin_request(psock, "{\"cmd\":\"get_console\"}", json, sizeof(json)) !=
+        0) {
+        fprintf(stderr, "(console: request failed)\n");
+        return;
+    }
+    if (extract_text(json, text, sizeof(text)) != 0) {
+        fprintf(stderr, "(console: no text)\n");
+        return;
+    }
+    fputs("-------- guest console --------\n", stderr);
+    fputs(text, stderr);
+    if (text[0] && text[strlen(text) - 1] != '\n') {
+        fputc('\n', stderr);
+    }
+    fputs("-------------------------------\n", stderr);
 }
 
-int qc_cmd_run(int argc, char **argv)
+static void usage_run(void)
 {
-    const char *iso = NULL;
-    const char *plugin = "build/libqemu-connect.so";
-    const char *mem = "512M";
-    const char *qemu_bin = "qemu-system-x86_64";
-    int timeout_ms = 60000;
-    const char *expects[MAX_EXPECTS];
-    int nexp = 0;
+    fprintf(stderr,
+            "Usage:\n"
+            "  qemu-connect run --iso PATH [options] [steps...]\n"
+            "  qemu-connect guest [shell command...]     # simple munux helper\n"
+            "\n"
+            "Options:\n"
+            "  --iso PATH         CD/ISO (required for run)\n"
+            "  --disk PATH        Optional IDE disk (e.g. munux disk.img)\n"
+            "  --plugin PATH      default: build/libqemu-connect.so\n"
+            "  --mem SIZE         default: 512M\n"
+            "  --timeout MS       per-expect timeout (default 60000)\n"
+            "  --qemu PATH        default: qemu-system-x86_64\n"
+            "  --show             print guest console to stderr at end\n"
+            "\n"
+            "Steps (order matters, repeatable):\n"
+            "  --expect TEXT      wait until console contains TEXT\n"
+            "  --type TEXT        type TEXT then Enter (needs QMP)\n"
+            "\n"
+            "Simple examples:\n"
+            "  qemu-connect guest\n"
+            "  qemu-connect guest help\n"
+            "  qemu-connect guest ls\n"
+            "  qemu-connect run --iso k.iso --disk d.img --expect 'munux>' \\\n"
+            "      --type help --show\n"
+            "\n"
+            "Exit: 0 ok, 1 step fail, 2 missing iso/usage, 3 qemu crash, 4 connect fail\n");
+}
 
-    for (int i = 0; i < argc; i++) {
-        if (strcmp(argv[i], "--iso") == 0 && i + 1 < argc) {
-            iso = argv[++i];
-        } else if (strcmp(argv[i], "--plugin") == 0 && i + 1 < argc) {
-            plugin = argv[++i];
-        } else if (strcmp(argv[i], "--mem") == 0 && i + 1 < argc) {
-            mem = argv[++i];
-        } else if (strcmp(argv[i], "--qemu") == 0 && i + 1 < argc) {
-            qemu_bin = argv[++i];
-        } else if (strcmp(argv[i], "--timeout") == 0 && i + 1 < argc) {
-            timeout_ms = atoi(argv[++i]);
-            if (timeout_ms <= 0) {
-                timeout_ms = 60000;
-            }
-        } else if (strcmp(argv[i], "--expect") == 0 && i + 1 < argc) {
-            if (nexp < MAX_EXPECTS) {
-                expects[nexp++] = argv[++i];
-            } else {
-                ++i;
-            }
-        } else if (strcmp(argv[i], "--keep-qmp") == 0) {
-            /* accepted, ignored for now (always cleanup sockets) */
-        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-            usage();
-            return QC_RUN_USAGE;
-        } else {
-            fprintf(stderr, "run: unknown arg %s\n", argv[i]);
-            usage();
-            return QC_RUN_USAGE;
-        }
-    }
-
-    if (!iso) {
-        usage();
-        return QC_RUN_ISO_MISSING;
-    }
+static int run_session(const char *iso, const char *disk, const char *plugin,
+                       const char *mem, const char *qemu_bin, int timeout_ms,
+                       step_t *steps, int nsteps, bool show)
+{
     {
         struct stat st;
-        if (stat(iso, &st) != 0 || !S_ISREG(st.st_mode)) {
-            fprintf(stderr, "run: ISO not found: %s\n", iso);
+        if (!iso || stat(iso, &st) != 0 || !S_ISREG(st.st_mode)) {
+            fprintf(stderr, "run: ISO not found: %s\n", iso ? iso : "(null)");
+            return QC_RUN_ISO_MISSING;
+        }
+        if (disk && (stat(disk, &st) != 0 || !S_ISREG(st.st_mode))) {
+            fprintf(stderr, "run: disk not found: %s\n", disk);
             return QC_RUN_ISO_MISSING;
         }
         if (stat(plugin, &st) != 0) {
-            fprintf(stderr, "run: plugin not found: %s\n", plugin);
+            fprintf(stderr, "run: plugin not found: %s (run: make plugin)\n",
+                    plugin);
             return QC_RUN_CONNECT_FAIL;
         }
     }
@@ -258,10 +267,23 @@ int qc_cmd_run(int argc, char **argv)
             dup2(logfd, STDERR_FILENO);
             close(logfd);
         }
-        execlp(qemu_bin, qemu_bin, "-display", "none", "-m", mem, "-accel",
-               "tcg", "-cdrom", iso, "-boot", "order=d", "-plugin", plugin_arg,
-               "-qmp", qmp_arg, "-serial", "none", "-parallel", "none",
-               "-monitor", "none", "-nographic", (char *)NULL);
+        if (disk) {
+            char d0[512], d1[512];
+            snprintf(d0, sizeof(d0), "format=raw,file=%s,if=ide,index=0,media=disk",
+                     disk);
+            snprintf(d1, sizeof(d1),
+                     "format=raw,file=%s,if=ide,index=1,media=cdrom", iso);
+            execlp(qemu_bin, qemu_bin, "-display", "none", "-m", mem, "-accel",
+                   "tcg", "-drive", d0, "-drive", d1, "-boot", "order=d",
+                   "-plugin", plugin_arg, "-qmp", qmp_arg, "-serial", "none",
+                   "-parallel", "none", "-monitor", "none", "-nographic",
+                   (char *)NULL);
+        } else {
+            execlp(qemu_bin, qemu_bin, "-display", "none", "-m", mem, "-accel",
+                   "tcg", "-cdrom", iso, "-boot", "order=d", "-plugin",
+                   plugin_arg, "-qmp", qmp_arg, "-serial", "none", "-parallel",
+                   "none", "-monitor", "none", "-nographic", (char *)NULL);
+        }
         perror("execlp qemu");
         _exit(127);
     }
@@ -274,7 +296,7 @@ int qc_cmd_run(int argc, char **argv)
         }
         int st = 0;
         if (waitpid(qpid, &st, WNOHANG) == qpid) {
-            fprintf(stderr, "run: QEMU exited early (see %s)\n", logpath);
+            fprintf(stderr, "run: QEMU exited early (log: %s)\n", logpath);
             return QC_RUN_QEMU_CRASH;
         }
         sleep_ms(100);
@@ -306,32 +328,51 @@ int qc_cmd_run(int argc, char **argv)
     }
 
     int rc = QC_RUN_OK;
-    bool exp_ok[MAX_EXPECTS];
-    memset(exp_ok, 0, sizeof(exp_ok));
 
-    if (nexp == 0) {
+    if (nsteps == 0) {
         char buf[256];
         if (plugin_request(psock, "{\"cmd\":\"ping\"}", buf, sizeof(buf)) != 0 ||
             strstr(buf, "\"ok\":true") == NULL) {
             rc = QC_RUN_CONNECT_FAIL;
         }
-    } else {
-        for (int i = 0; i < nexp; i++) {
-            if (wait_expect(psock, expects[i], timeout_ms) == 0) {
-                exp_ok[i] = true;
-                fprintf(stderr, "run: matched %s\n", expects[i]);
+    }
+
+    for (int i = 0; i < nsteps && rc == QC_RUN_OK; i++) {
+        int st = 0;
+        if (waitpid(qpid, &st, WNOHANG) == qpid) {
+            fprintf(stderr, "run: QEMU crashed\n");
+            rc = QC_RUN_QEMU_CRASH;
+            break;
+        }
+        if (steps[i].kind == STEP_EXPECT) {
+            fprintf(stderr, "run: wait for %s\n", steps[i].arg);
+            if (wait_expect(psock, steps[i].arg, timeout_ms) == 0) {
+                steps[i].ok = true;
+                fprintf(stderr, "run: ok  (found)\n");
             } else {
-                fprintf(stderr, "run: TIMEOUT waiting for %s\n", expects[i]);
+                fprintf(stderr, "run: TIMEOUT waiting for: %s\n", steps[i].arg);
                 rc = QC_RUN_EXPECT_FAIL;
                 break;
             }
-            int st = 0;
-            if (waitpid(qpid, &st, WNOHANG) == qpid) {
-                fprintf(stderr, "run: QEMU crashed during expect\n");
-                rc = QC_RUN_QEMU_CRASH;
+        } else { /* TYPE */
+            fprintf(stderr, "run: type %s\n", steps[i].arg);
+            if (qc_qmp_type(qmp, steps[i].arg, 15) != 0) {
+                fprintf(stderr, "run: type failed\n");
+                rc = QC_RUN_EXPECT_FAIL;
                 break;
             }
+            if (qc_qmp_send_key(qmp, "ret") != 0) {
+                fprintf(stderr, "run: Enter key failed\n");
+                rc = QC_RUN_EXPECT_FAIL;
+                break;
+            }
+            steps[i].ok = true;
+            sleep_ms(200); /* let guest paint */
         }
+    }
+
+    if (show || rc != QC_RUN_OK) {
+        print_console(psock);
     }
 
     long long dur = now_ms() - t0;
@@ -353,24 +394,164 @@ int qc_cmd_run(int argc, char **argv)
         sleep_ms(100);
     }
     waitpid(qpid, NULL, 0);
-
     unlink(psock);
     unlink(qsock);
 
-    printf("{\"ok\":%s,\"duration_ms\":%lld,\"expects\":[",
+    /* Compact JSON for agents */
+    printf("{\"ok\":%s,\"duration_ms\":%lld,\"steps\":[",
            rc == QC_RUN_OK ? "true" : "false", dur);
-    for (int i = 0; i < nexp; i++) {
-        printf("%s{\"pattern\":", i ? "," : "");
+    for (int i = 0; i < nsteps; i++) {
+        printf("%s{\"op\":\"%s\",\"arg\":", i ? "," : "",
+               steps[i].kind == STEP_EXPECT ? "expect" : "type");
         putchar('"');
-        for (const char *p = expects[i]; *p; p++) {
+        for (const char *p = steps[i].arg; *p; p++) {
             if (*p == '"' || *p == '\\') {
                 putchar('\\');
             }
             putchar(*p);
         }
-        printf("\",\"ok\":%s}", exp_ok[i] ? "true" : "false");
+        printf("\",\"ok\":%s}", steps[i].ok ? "true" : "false");
     }
     printf("],\"exit_code\":%d}\n", rc);
-
     return rc;
+}
+
+int qc_cmd_run(int argc, char **argv)
+{
+    const char *iso = NULL;
+    const char *disk = NULL;
+    const char *plugin = "build/libqemu-connect.so";
+    const char *mem = "512M";
+    const char *qemu_bin = "qemu-system-x86_64";
+    int timeout_ms = 60000;
+    bool show = false;
+    step_t steps[MAX_STEPS];
+    int nsteps = 0;
+
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--iso") == 0 && i + 1 < argc) {
+            iso = argv[++i];
+        } else if (strcmp(argv[i], "--disk") == 0 && i + 1 < argc) {
+            disk = argv[++i];
+        } else if (strcmp(argv[i], "--plugin") == 0 && i + 1 < argc) {
+            plugin = argv[++i];
+        } else if (strcmp(argv[i], "--mem") == 0 && i + 1 < argc) {
+            mem = argv[++i];
+        } else if (strcmp(argv[i], "--qemu") == 0 && i + 1 < argc) {
+            qemu_bin = argv[++i];
+        } else if (strcmp(argv[i], "--timeout") == 0 && i + 1 < argc) {
+            timeout_ms = atoi(argv[++i]);
+            if (timeout_ms <= 0) {
+                timeout_ms = 60000;
+            }
+        } else if (strcmp(argv[i], "--expect") == 0 && i + 1 < argc) {
+            if (nsteps < MAX_STEPS) {
+                steps[nsteps].kind = STEP_EXPECT;
+                steps[nsteps].arg = argv[++i];
+                steps[nsteps].ok = false;
+                nsteps++;
+            } else {
+                ++i;
+            }
+        } else if (strcmp(argv[i], "--type") == 0 && i + 1 < argc) {
+            if (nsteps < MAX_STEPS) {
+                steps[nsteps].kind = STEP_TYPE;
+                steps[nsteps].arg = argv[++i];
+                steps[nsteps].ok = false;
+                nsteps++;
+            } else {
+                ++i;
+            }
+        } else if (strcmp(argv[i], "--show") == 0 ||
+                   strcmp(argv[i], "--console") == 0) {
+            show = true;
+        } else if (strcmp(argv[i], "--keep-qmp") == 0) {
+            /* ignored */
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            usage_run();
+            return QC_RUN_USAGE;
+        } else {
+            fprintf(stderr, "run: unknown arg %s\n", argv[i]);
+            usage_run();
+            return QC_RUN_USAGE;
+        }
+    }
+
+    if (!iso) {
+        usage_run();
+        return QC_RUN_ISO_MISSING;
+    }
+    return run_session(iso, disk, plugin, mem, qemu_bin, timeout_ms, steps,
+                       nsteps, show);
+}
+
+/*
+ * guest [cmd...]
+ *   Boots test/munux with defaults, waits for munux>, optional shell cmd, shows console.
+ */
+int qc_cmd_guest(int argc, char **argv)
+{
+    const char *iso = "test/munux/build/kernel.iso";
+    const char *disk = "test/munux/build/disk.img";
+    const char *plugin = "build/libqemu-connect.so";
+    int timeout_ms = 60000;
+
+    /* optional overrides as flags before command words */
+    int i = 0;
+    while (i < argc && argv[i][0] == '-') {
+        if (strcmp(argv[i], "--iso") == 0 && i + 1 < argc) {
+            iso = argv[++i];
+            i++;
+        } else if (strcmp(argv[i], "--disk") == 0 && i + 1 < argc) {
+            disk = argv[++i];
+            i++;
+        } else if (strcmp(argv[i], "--plugin") == 0 && i + 1 < argc) {
+            plugin = argv[++i];
+            i++;
+        } else if (strcmp(argv[i], "--timeout") == 0 && i + 1 < argc) {
+            timeout_ms = atoi(argv[++i]);
+            i++;
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            fprintf(stderr,
+                    "Usage: qemu-connect guest [shell words...]\n"
+                    "  Boots test/munux (iso+disk), waits for munux>,\n"
+                    "  types the shell command if given, prints console.\n"
+                    "Examples:\n"
+                    "  make -C test/munux iso disk && make plugin cli\n"
+                    "  ./build/qemu-connect guest\n"
+                    "  ./build/qemu-connect guest help\n"
+                    "  ./build/qemu-connect guest ls\n"
+                    "  ./build/qemu-connect guest cat hello.txt\n");
+            return QC_RUN_USAGE;
+        } else {
+            fprintf(stderr, "guest: unknown flag %s\n", argv[i]);
+            return QC_RUN_USAGE;
+        }
+    }
+
+    step_t steps[MAX_STEPS];
+    int nsteps = 0;
+    steps[nsteps++] =
+        (step_t){ .kind = STEP_EXPECT, .arg = "munux>", .ok = false };
+
+    if (i < argc) {
+        /* Join remaining args into one shell line */
+        static char line[512];
+        line[0] = '\0';
+        for (; i < argc; i++) {
+            if (line[0]) {
+                strncat(line, " ", sizeof(line) - strlen(line) - 1);
+            }
+            strncat(line, argv[i], sizeof(line) - strlen(line) - 1);
+        }
+        steps[nsteps++] =
+            (step_t){ .kind = STEP_TYPE, .arg = line, .ok = false };
+        /* After a command, wait for the prompt to return */
+        steps[nsteps++] =
+            (step_t){ .kind = STEP_EXPECT, .arg = "munux>", .ok = false };
+    }
+
+    fprintf(stderr, "guest: munux  iso=%s  disk=%s\n", iso, disk);
+    return run_session(iso, disk, plugin, "512M", "qemu-system-x86_64",
+                       timeout_ms, steps, nsteps, true /* always show */);
 }

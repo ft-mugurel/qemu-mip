@@ -52,6 +52,16 @@ make clean
 
 ## Quick start
 
+### Simple munux test (recommended)
+
+```sh
+make plugin cli
+make -C test/munux iso disk
+./build/qemu-connect guest          # boot + print console
+./build/qemu-connect guest help     # type a shell command
+make guest CMD=ls
+```
+
 ```sh
 # Terminal A — boot any x86 guest with the plugin
 qemu-system-x86_64 -display none -m 512M -cdrom your-kernel.iso \

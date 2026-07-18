@@ -2,7 +2,6 @@
 #ifndef QEMU_CONNECT_RUN_H
 #define QEMU_CONNECT_RUN_H
 
-/* Exit codes for qemu-connect run */
 #define QC_RUN_OK              0
 #define QC_RUN_EXPECT_FAIL     1
 #define QC_RUN_ISO_MISSING     2
@@ -11,5 +10,7 @@
 #define QC_RUN_USAGE           2
 
 int qc_cmd_run(int argc, char **argv);
+/* Simple munux helper: guest [shell-command...] */
+int qc_cmd_guest(int argc, char **argv);
 
 #endif
