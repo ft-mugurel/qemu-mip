@@ -3,19 +3,23 @@
 #define QEMU_CONNECT_PROTOCOL_H
 
 #include <stddef.h>
+#include <stdbool.h>
 
+#include "queue.h"
 #include "vga.h"
 
-/*
- * Line-oriented JSON-ish protocol (v0.1), one request/response per line.
- * See docs/protocol.md.
- *
- * request:  {"cmd":"ping"}
- * response: {"ok":true,"result":{"pong":true,"proto":"0.1"}}
- */
+typedef struct {
+    qc_vga_state_t *vga;
+    qc_queue_t *queue;
+    bool vga_refresh_enabled;
+} qc_proto_ctx_t;
 
-/* Handle one request line; write response into out (NUL-terminated). */
-void qc_protocol_handle(const char *req_line, qc_vga_state_t *vga,
+/*
+ * Line-oriented JSON protocol. See docs/protocol.md.
+ * request:  {"cmd":"ping"}
+ * response: {"ok":true,"result":{...}}
+ */
+void qc_protocol_handle(const char *req_line, const qc_proto_ctx_t *ctx,
                         char *out, size_t out_len);
 
 #endif

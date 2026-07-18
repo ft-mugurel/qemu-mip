@@ -25,6 +25,12 @@ void qc_vga_note_store(qc_vga_state_t *s, uint64_t hwaddr, uint64_t value,
                        unsigned size);
 
 /*
+ * Rebuild shadow from raw cell bytes (len == QEMU_CONNECT_VGA_BYTES preferred).
+ * Each cell is LE u16: char in low byte. Increments write_count once.
+ */
+void qc_vga_load_cells(qc_vga_state_t *s, const uint8_t *raw, size_t len);
+
+/*
  * Copy current text into out (NUL-terminated, rows separated by '\n').
  * Clears dirty. Thread-safe.
  */

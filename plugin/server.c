@@ -30,7 +30,7 @@ struct qc_server {
     int listen_fd;
     int client_fd;
     char path[108];
-    qc_vga_state_t *vga;
+    const qc_proto_ctx_t *ctx;
 
     bool use_thread;
     bool thread_started;
@@ -93,7 +93,7 @@ static void handle_complete_line(qc_server_t *srv)
     srv->line_buf[n] = '\0';
 
     char resp[QEMU_CONNECT_RESP_MAX];
-    qc_protocol_handle(srv->line_buf, srv->vga, resp, sizeof(resp));
+    qc_protocol_handle(srv->line_buf, srv->ctx, resp, sizeof(resp));
 
     size_t rlen = strlen(resp);
     if (rlen + 1 < sizeof(resp)) {
@@ -239,7 +239,7 @@ static void *server_thread_main(void *arg)
     return NULL;
 }
 
-qc_server_t *qc_server_start(const char *socket_path, qc_vga_state_t *vga,
+qc_server_t *qc_server_start(const char *socket_path, const qc_proto_ctx_t *ctx,
                              bool use_thread)
 {
     const char *path = socket_path && socket_path[0]
@@ -252,7 +252,7 @@ qc_server_t *qc_server_start(const char *socket_path, qc_vga_state_t *vga,
     }
     srv->listen_fd = -1;
     srv->client_fd = -1;
-    srv->vga = vga;
+    srv->ctx = ctx;
     srv->use_thread = use_thread;
     srv->stop = false;
     srv->thread_started = false;

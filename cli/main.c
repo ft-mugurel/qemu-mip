@@ -2,12 +2,9 @@
 /*
  * qemu-connect CLI — talk to the plugin control socket.
  *
- * Usage:
- *   qemu-connect [--socket PATH] ping
- *   qemu-connect [--socket PATH] version
- *   qemu-connect [--socket PATH] get_console [--text-only]
- *   qemu-connect [--socket PATH] raw '{"cmd":"ping"}'
+ *   qemu-connect [--socket PATH] ping|version|get_console|expect|raw ...
  */
+#define _POSIX_C_SOURCE 200809L
 #include "qemu-connect.h"
 
 #include <errno.h>
@@ -16,21 +13,32 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
+
+static void sleep_ms(int ms)
+{
+    struct timespec ts;
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+    nanosleep(&ts, NULL);
+}
 
 static int usage(const char *argv0)
 {
     fprintf(stderr,
-            "Usage: %s [--socket PATH] <command>\n"
+            "Usage: %s [--socket PATH] <command> [args]\n"
             "Commands:\n"
-            "  ping                    Liveness check\n"
-            "  version                 Protocol / name / mem counters\n"
-            "  get_console             VGA console JSON (proto 0.2 includes text)\n"
-            "  get_console --text-only Print only the console text field\n"
-            "  raw <json-line>         Send a raw request line\n"
+            "  ping\n"
+            "  version\n"
+            "  get_console [--text-only] [--refresh]\n"
+            "  expect <substring> [--timeout MS]\n"
+            "  raw <json-line>\n"
             "\n"
-            "Default socket: %s\n",
+            "Default socket: %s\n"
+            "Default expect timeout: 30000 ms\n",
             argv0, QEMU_CONNECT_DEFAULT_SOCK);
     return 2;
 }
@@ -108,45 +116,43 @@ static int request(const char *path, const char *line)
     return 0;
 }
 
-/* Minimal extract of JSON string field "text":"..." with basic unescapes. */
-static int print_text_only(const char *json)
+/* Extract JSON string field "text":"..." into dst (unescaped). */
+static int extract_text_field(const char *json, char *dst, size_t dst_len)
 {
     const char *key = "\"text\":\"";
     const char *p = strstr(json, key);
-    if (!p) {
-        fprintf(stderr, "get_console: no text field in response\n");
-        fputs(json, stderr);
-        return 1;
+    if (!p || dst_len == 0) {
+        return -1;
     }
     p += strlen(key);
-    while (*p) {
+    size_t o = 0;
+    while (*p && o + 1 < dst_len) {
         if (*p == '\\' && p[1]) {
             p++;
             switch (*p) {
             case 'n':
-                putchar('\n');
+                dst[o++] = '\n';
                 break;
             case 'r':
-                putchar('\r');
+                dst[o++] = '\r';
                 break;
             case 't':
-                putchar('\t');
+                dst[o++] = '\t';
                 break;
             case '"':
-                putchar('"');
+                dst[o++] = '"';
                 break;
             case '\\':
-                putchar('\\');
+                dst[o++] = '\\';
                 break;
             case 'u':
-                /* skip \uXXXX */
                 for (int i = 0; i < 4 && p[1]; i++) {
                     p++;
                 }
-                putchar('?');
+                dst[o++] = '?';
                 break;
             default:
-                putchar(*p);
+                dst[o++] = *p;
                 break;
             }
             p++;
@@ -155,10 +161,72 @@ static int print_text_only(const char *json)
         if (*p == '"') {
             break;
         }
-        putchar(*p++);
+        dst[o++] = *p++;
     }
-    putchar('\n');
+    dst[o] = '\0';
     return 0;
+}
+
+static int print_text_only(const char *json)
+{
+    char text[QEMU_CONNECT_VGA_COLS * QEMU_CONNECT_VGA_ROWS +
+              QEMU_CONNECT_VGA_ROWS + 8];
+    if (extract_text_field(json, text, sizeof(text)) != 0) {
+        fprintf(stderr, "get_console: no text field in response\n");
+        fputs(json, stderr);
+        return 1;
+    }
+    fputs(text, stdout);
+    fputc('\n', stdout);
+    return 0;
+}
+
+static long long now_ms(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (long long)tv.tv_sec * 1000LL + tv.tv_usec / 1000LL;
+}
+
+static int cmd_expect(const char *sock, const char *needle, int timeout_ms)
+{
+    if (!needle || !needle[0]) {
+        fprintf(stderr, "expect: empty substring\n");
+        return 2;
+    }
+
+    long long deadline = now_ms() + timeout_ms;
+    char json[QEMU_CONNECT_RESP_MAX];
+    char text[QEMU_CONNECT_VGA_COLS * QEMU_CONNECT_VGA_ROWS +
+              QEMU_CONNECT_VGA_ROWS + 8];
+
+    while (now_ms() < deadline) {
+        if (request_buf(sock, "{\"cmd\":\"get_console\"}", json, sizeof(json),
+                        NULL) != 0) {
+            sleep_ms(100);
+            continue;
+        }
+        if (extract_text_field(json, text, sizeof(text)) != 0) {
+            sleep_ms(100);
+            continue;
+        }
+        if (strstr(text, needle) != NULL) {
+            fprintf(stderr, "expect: matched %s\n", needle);
+            return 0;
+        }
+        sleep_ms(100);
+    }
+
+    fprintf(stderr, "expect: timeout after %d ms waiting for: %s\n", timeout_ms,
+            needle);
+    /* Best-effort dump for agents */
+    if (request_buf(sock, "{\"cmd\":\"get_console\"}", json, sizeof(json),
+                    NULL) == 0) {
+        if (extract_text_field(json, text, sizeof(text)) == 0) {
+            fprintf(stderr, "--- last console ---\n%s\n", text);
+        }
+    }
+    return 1;
 }
 
 int main(int argc, char **argv)
@@ -170,6 +238,7 @@ int main(int argc, char **argv)
         return usage(argv[0]);
     }
 
+    /* Global optional --socket before command */
     if (strcmp(argv[i], "--socket") == 0) {
         if (argc < 4) {
             return usage(argv[0]);
@@ -183,6 +252,7 @@ int main(int argc, char **argv)
     }
 
     const char *cmd = argv[i];
+
     if (strcmp(cmd, "ping") == 0) {
         return request(sock, "{\"cmd\":\"ping\"}");
     }
@@ -191,18 +261,50 @@ int main(int argc, char **argv)
     }
     if (strcmp(cmd, "get_console") == 0) {
         bool text_only = false;
-        if (i + 1 < argc && strcmp(argv[i + 1], "--text-only") == 0) {
-            text_only = true;
+        bool refresh = false;
+        for (int j = i + 1; j < argc; j++) {
+            if (strcmp(argv[j], "--text-only") == 0) {
+                text_only = true;
+            } else if (strcmp(argv[j], "--refresh") == 0) {
+                refresh = true;
+            } else if (strcmp(argv[j], "--socket") == 0 && j + 1 < argc) {
+                sock = argv[++j];
+            }
         }
+        const char *line =
+            refresh ? "{\"cmd\":\"get_console\",\"refresh\":true}"
+                    : "{\"cmd\":\"get_console\"}";
         if (!text_only) {
-            return request(sock, "{\"cmd\":\"get_console\"}");
+            return request(sock, line);
         }
         char buf[QEMU_CONNECT_RESP_MAX];
-        if (request_buf(sock, "{\"cmd\":\"get_console\"}", buf, sizeof(buf),
-                        NULL) != 0) {
+        if (request_buf(sock, line, buf, sizeof(buf), NULL) != 0) {
+            return 1;
+        }
+        /* refresh errors have no text field */
+        if (strstr(buf, "\"ok\":false")) {
+            fputs(buf, stderr);
             return 1;
         }
         return print_text_only(buf);
+    }
+    if (strcmp(cmd, "expect") == 0) {
+        if (i + 1 >= argc) {
+            return usage(argv[0]);
+        }
+        const char *needle = argv[i + 1];
+        int timeout_ms = 30000;
+        for (int j = i + 2; j < argc; j++) {
+            if (strcmp(argv[j], "--timeout") == 0 && j + 1 < argc) {
+                timeout_ms = atoi(argv[++j]);
+                if (timeout_ms <= 0) {
+                    timeout_ms = 30000;
+                }
+            } else if (strcmp(argv[j], "--socket") == 0 && j + 1 < argc) {
+                sock = argv[++j];
+            }
+        }
+        return cmd_expect(sock, needle, timeout_ms);
     }
     if (strcmp(cmd, "raw") == 0) {
         if (i + 1 >= argc) {

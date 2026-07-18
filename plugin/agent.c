@@ -2,33 +2,37 @@
 /*
  * qemu-connect — QEMU TCG plugin for agent interaction with guests.
  *
- * Load:
- *   qemu-system-x86_64 ... \
- *     -plugin ./build/libqemu-connect.so,socket=/tmp/qemu-connect.sock
- *
- * Optional args:
- *   socket=PATH           control Unix socket (default /tmp/qemu-connect.sock)
- *   socket_thread=on|off  dedicated poll thread (default on)
- *   vga=on|off            instrument stores for 0xB8000 scrape (default on)
+ * Args:
+ *   socket=PATH
+ *   socket_thread=on|off
+ *   vga=on|off
+ *   vga_refresh=on|off          allow get_console refresh:true (default on)
+ *   vcpu_queue_timeout_ms=N     wait budget for refresh (default 250)
  */
 #include <qemu-plugin.h>
 
 #include "qemu-connect.h"
 #include "mem.h"
+#include "protocol.h"
+#include "queue.h"
 #include "server.h"
 #include "vga.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
-static qemu_plugin_id_t g_id;
 static qc_vga_state_t g_vga;
+static qc_queue_t *g_queue;
+static qc_proto_ctx_t g_ctx;
 static qc_server_t *g_server;
 static char g_socket_path[256];
 static bool g_socket_thread = true;
 static bool g_vga_enabled = true;
+static bool g_vga_refresh = true;
+static int g_queue_timeout_ms = QEMU_CONNECT_QUEUE_TIMEOUT_MS_DEFAULT;
 
 static bool parse_bool_arg(const char *val, bool default_val)
 {
@@ -52,6 +56,8 @@ static void parse_args(int argc, char **argv)
              QEMU_CONNECT_DEFAULT_SOCK);
     g_socket_thread = true;
     g_vga_enabled = true;
+    g_vga_refresh = true;
+    g_queue_timeout_ms = QEMU_CONNECT_QUEUE_TIMEOUT_MS_DEFAULT;
 
     for (int i = 0; i < argc; i++) {
         const char *a = argv[i];
@@ -64,23 +70,56 @@ static void parse_args(int argc, char **argv)
             g_socket_thread = parse_bool_arg(a + 14, true);
         } else if (strncmp(a, "vga=", 4) == 0) {
             g_vga_enabled = parse_bool_arg(a + 4, true);
+        } else if (strncmp(a, "vga_refresh=", 12) == 0) {
+            g_vga_refresh = parse_bool_arg(a + 12, true);
+        } else if (strncmp(a, "vcpu_queue_timeout_ms=", 22) == 0) {
+            int v = atoi(a + 22);
+            if (v > 0) {
+                g_queue_timeout_ms = v;
+            }
         }
     }
+}
+
+static void drain_queue(void)
+{
+    if (g_queue) {
+        qc_queue_drain(g_queue, &g_vga);
+    }
+}
+
+static void vcpu_tb_exec(unsigned int vcpu_index, void *userdata)
+{
+    (void)vcpu_index;
+    (void)userdata;
+    drain_queue();
 }
 
 static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 {
     (void)id;
 
-    /* Fallback path when no dedicated socket thread. */
+    drain_queue();
+
     if (!g_socket_thread && g_server) {
         qc_server_poll(g_server);
     }
 
-    /* Instrument stores for VGA shadow (every TB, every insn). */
     if (g_vga_enabled) {
         qc_mem_instrument_tb(tb, &g_vga);
     }
+
+    if (g_vga_refresh && g_queue) {
+        qemu_plugin_register_vcpu_tb_exec_cb(tb, vcpu_tb_exec,
+                                             QEMU_PLUGIN_CB_NO_REGS, NULL);
+    }
+}
+
+static void vcpu_idle(qemu_plugin_id_t id, unsigned int vcpu_index)
+{
+    (void)id;
+    (void)vcpu_index;
+    drain_queue();
 }
 
 static void plugin_exit(qemu_plugin_id_t id, void *userdata)
@@ -91,6 +130,10 @@ static void plugin_exit(qemu_plugin_id_t id, void *userdata)
         qc_server_stop(g_server);
         g_server = NULL;
     }
+    if (g_queue) {
+        qc_queue_destroy(g_queue);
+        g_queue = NULL;
+    }
     qc_vga_destroy(&g_vga);
     qemu_plugin_outs("qemu-connect: unloaded\n");
 }
@@ -99,36 +142,47 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
                                           const qemu_info_t *info, int argc,
                                           char **argv)
 {
-    g_id = id;
     parse_args(argc, argv);
     qc_vga_init(&g_vga);
 
-    g_server = qc_server_start(g_socket_path, &g_vga, g_socket_thread);
-    if (!g_server) {
-        qemu_plugin_outs("qemu-connect: failed to start control socket\n");
+    g_queue = qc_queue_create(g_queue_timeout_ms);
+    if (!g_queue) {
+        qemu_plugin_outs("qemu-connect: failed to create queue\n");
         qc_vga_destroy(&g_vga);
         return 1;
     }
 
-    char msg[512];
+    g_ctx.vga = &g_vga;
+    g_ctx.queue = g_queue;
+    g_ctx.vga_refresh_enabled = g_vga_refresh;
+
+    g_server = qc_server_start(g_socket_path, &g_ctx, g_socket_thread);
+    if (!g_server) {
+        qemu_plugin_outs("qemu-connect: failed to start control socket\n");
+        qc_queue_destroy(g_queue);
+        g_queue = NULL;
+        qc_vga_destroy(&g_vga);
+        return 1;
+    }
+
+    char msg[640];
     snprintf(msg, sizeof(msg),
              "qemu-connect: installed (target=%s system=%s socket=%s "
-             "thread=%s vga=%s proto=%d.%d)\n",
+             "thread=%s vga=%s refresh=%s qtimeout=%dms proto=%d.%d)\n",
              info && info->target_name ? info->target_name : "?",
              info && info->system_emulation ? "yes" : "no",
              qc_server_path(g_server),
              qc_server_uses_thread(g_server) ? "on" : "off",
              g_vga_enabled ? "on" : "off",
+             g_vga_refresh ? "on" : "off", g_queue_timeout_ms,
              QEMU_CONNECT_PROTO_MAJOR, QEMU_CONNECT_PROTO_MINOR);
     qemu_plugin_outs(msg);
 
-    /*
-     * Need TB translate when:
-     *  - vga=on (register mem callbacks), or
-     *  - socket_thread=off (drive server poll)
-     */
-    if (g_vga_enabled || !g_socket_thread) {
+    if (g_vga_enabled || g_vga_refresh || !g_socket_thread) {
         qemu_plugin_register_vcpu_tb_trans_cb(id, vcpu_tb_trans);
+    }
+    if (g_vga_refresh) {
+        qemu_plugin_register_vcpu_idle_cb(id, vcpu_idle);
     }
     qemu_plugin_register_atexit_cb(id, plugin_exit, NULL);
     return 0;

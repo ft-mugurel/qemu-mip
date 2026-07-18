@@ -34,7 +34,6 @@ void qc_vga_note_store(qc_vga_state_t *s, uint64_t hwaddr, uint64_t value,
     uint64_t off = hwaddr - QEMU_CONNECT_VGA_TEXT_PHYS;
 
     pthread_mutex_lock(&s->lock);
-    /* Character bytes are even offsets in the classic text buffer. */
     for (unsigned i = 0; i < size; i++) {
         uint64_t b = off + i;
         if (b >= QEMU_CONNECT_VGA_BYTES) {
@@ -48,6 +47,29 @@ void qc_vga_note_store(qc_vga_state_t *s, uint64_t hwaddr, uint64_t value,
             }
         }
     }
+    s->write_count++;
+    pthread_mutex_unlock(&s->lock);
+}
+
+void qc_vga_load_cells(qc_vga_state_t *s, const uint8_t *raw, size_t len)
+{
+    if (!s || !raw) {
+        return;
+    }
+
+    pthread_mutex_lock(&s->lock);
+    size_t cells = sizeof(s->text);
+    size_t max_cells = len / 2;
+    if (max_cells < cells) {
+        cells = max_cells;
+    }
+    for (size_t i = 0; i < cells; i++) {
+        s->text[i] = (char)raw[i * 2];
+    }
+    for (size_t i = cells; i < sizeof(s->text); i++) {
+        s->text[i] = ' ';
+    }
+    s->dirty = true;
     s->write_count++;
     pthread_mutex_unlock(&s->lock);
 }

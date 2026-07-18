@@ -8,13 +8,16 @@
 
 #define QEMU_CONNECT_NAME        "qemu-connect"
 #define QEMU_CONNECT_PROTO_MAJOR 0
-#define QEMU_CONNECT_PROTO_MINOR 2
+#define QEMU_CONNECT_PROTO_MINOR 3
 
 /* Default Unix socket path if the plugin is loaded without socket= */
 #define QEMU_CONNECT_DEFAULT_SOCK "/tmp/qemu-connect.sock"
 
 /* Max JSON response for get_console (text + metadata). */
 #define QEMU_CONNECT_RESP_MAX    (32 * 1024)
+
+/* Default vCPU queue wait for refresh/mem ops (milliseconds). */
+#define QEMU_CONNECT_QUEUE_TIMEOUT_MS_DEFAULT 250
 
 /* VGA text mode (PC BIOS / many hobby kernels) */
 #define QEMU_CONNECT_VGA_TEXT_PHYS 0x000B8000ULL

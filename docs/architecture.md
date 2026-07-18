@@ -110,3 +110,18 @@ The plugin, on every translation block:
 device memory and still be a valid text buffer.
 
 Plugin arg `vga=off` disables instrumentation (shadow stays blank/spaces).
+
+## vCPU work queue (PR3)
+
+Some plugin APIs (e.g. `qemu_plugin_read_memory_hwaddr`) must run in **vCPU
+context**. The control socket thread cannot call them directly.
+
+```text
+server thread                     vCPU (tb_trans / tb_exec / idle)
+     │                                      │
+     │  enqueue refresh + timedwait         │
+     │─────────────────────────────────────►│ drain: hwaddr read
+     │  ◄─── signal / timeout ──────────────│ load cells into shadow
+```
+
+Default `get_console` stays **shadow-only** and never waits on this queue.

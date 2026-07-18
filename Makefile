@@ -23,26 +23,28 @@ PLUGIN_SRCS    := \
 	$(PLUGIN_DIR)/vga.c \
 	$(PLUGIN_DIR)/server.c \
 	$(PLUGIN_DIR)/protocol.c \
-	$(PLUGIN_DIR)/mem.c
+	$(PLUGIN_DIR)/mem.c \
+	$(PLUGIN_DIR)/queue.c
 
 PLUGIN_OBJS    := $(patsubst $(PLUGIN_DIR)/%.c,$(BUILD_DIR)/%.o,$(PLUGIN_SRCS))
 CLI_OBJS       := $(BUILD_DIR)/cli_main.o
 VGA_UNIT_OBJS  := $(BUILD_DIR)/vga.o $(BUILD_DIR)/test_vga_unit.o
 
 .PHONY: all plugin cli clean dirs help test-load test-ping test-vga-unit \
-	test-munux-console smoke
+	test-munux-iso test-munux-console test-munux-panic test-refresh smoke
 
 all: plugin cli
 
 help:
 	@echo "qemu-connect targets:"
-	@echo "  all                 Build plugin + CLI (default)"
-	@echo "  plugin / cli        Individual builds"
-	@echo "  test-ping           PR1: socket thread + ping"
-	@echo "  test-vga-unit       PR2: LE u16 cell → char (host only)"
-	@echo "  test-munux-console  PR2: boot munux ISO, scrape panic text"
-	@echo "  smoke               test-ping + test-vga-unit (+ munux if present)"
-	@echo "  clean"
+	@echo "  all / plugin / cli"
+	@echo "  test-ping           PR1 socket thread"
+	@echo "  test-vga-unit       PR2 host LE cell test"
+	@echo "  test-munux-iso      Build munux ISO if present"
+	@echo "  test-munux-panic    PR4 primary munux panic smoke (expect)"
+	@echo "  test-munux-console  Alias of test-munux-panic"
+	@echo "  test-refresh        PR3 shadow + refresh timeout"
+	@echo "  smoke               ping + vga-unit + munux-panic (+ refresh if munux)"
 
 dirs:
 	@mkdir -p $(BUILD_DIR)
@@ -76,20 +78,31 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 test-load: plugin
-	@command -v qemu-system-x86_64 >/dev/null || { echo "qemu-system-x86_64 not found"; exit 1; }
 	qemu-system-x86_64 -display none -machine none -accel tcg \
 		-plugin ./$(BUILD_DIR)/$(PLUGIN_NAME),socket=/tmp/qemu-connect-test.sock \
 		-monitor stdio
 
 test-ping: plugin cli
-	@command -v qemu-system-x86_64 >/dev/null || { echo "qemu-system-x86_64 not found"; exit 1; }
 	@bash scripts/test-ping.sh
 
 test-vga-unit: $(BUILD_DIR)/test_vga_unit
 	@$(BUILD_DIR)/test_vga_unit
 
-test-munux-console: plugin cli
-	@bash scripts/test-munux-console.sh
+test-munux-iso:
+	@if [ ! -d test/munux ]; then echo "SKIP munux (test/munux missing)"; exit 0; fi
+	@$(MAKE) -C test/munux iso
+
+test-munux-panic: plugin cli
+	@bash scripts/test-munux-panic.sh
+
+test-munux-console: test-munux-panic
+
+test-refresh: plugin cli
+	@bash scripts/test-refresh.sh
 
 smoke: test-ping test-vga-unit
-	@if [ -d test/munux ]; then $(MAKE) test-munux-console; else echo "SKIP munux (test/munux missing)"; fi
+	@if [ -d test/munux ]; then \
+		$(MAKE) test-munux-panic && $(MAKE) test-refresh; \
+	else \
+		echo "SKIP munux (test/munux missing)"; \
+	fi

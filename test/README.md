@@ -1,23 +1,25 @@
 # Test guests
 
-Kernel trees used while developing **qemu-connect**. They are **not** shipped
-inside this repository (see root `.gitignore`).
+Kernel trees used while developing **qemu-connect**. Nested clones under
+`test/*/` are **gitignored** (see root `.gitignore`).
 
 ## munux
 
 ```sh
 git clone git@github.com:ft-mugurel/munux.git test/munux
-# or HTTPS:
-# git clone https://github.com/ft-mugurel/munux.git test/munux
 ```
 
-Build / boot (from `test/munux`):
+### Make targets (from repo root)
 
-```sh
-make iso          # or make help
-# then load with the plugin, e.g.:
-qemu-system-x86_64 -display none -m 512M -cdrom build/kernel.iso \
-  -plugin ../../build/libqemu-connect.so,socket=/tmp/qemu-connect.sock
-```
+| Target | What it does |
+|--------|----------------|
+| `make test-munux-iso` | `make -C test/munux iso` |
+| `make test-munux-panic` | Boot ISO + plugin; `expect` panic strings |
+| `make test-refresh` | Shadow after halt + `refresh` timeout |
+| `make smoke` | ping + vga-unit + panic + refresh |
 
-See munux `README.md` and `SMOKE.md` for targets and checklists.
+Primary assertions (current munux end-state):
+
+1. `*** munux KERNEL PANIC ***`
+2. `Invalid opcode` / `#UD`
+3. `System halted.`
