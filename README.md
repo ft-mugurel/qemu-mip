@@ -145,6 +145,7 @@ Thin MCP server wrapping this CLI — see **[mcp/README.md](mcp/README.md)**.
 
 ```sh
 cd mcp && npm install && npm run build
+./scripts/mcp-smoke.sh   # prove all MCP tools
 # point Cursor/Claude at mcp/dist/index.js (see mcp/mcp.example.json)
 ```
 
