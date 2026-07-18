@@ -12,13 +12,11 @@ typedef struct {
     qc_vga_state_t *vga;
     qc_queue_t *queue;
     bool vga_refresh_enabled;
+    bool socket_thread;
+    bool vga_enabled;
+    bool hypercall_enabled;
 } qc_proto_ctx_t;
 
-/*
- * Line-oriented JSON protocol. See docs/protocol.md.
- * request:  {"cmd":"ping"}
- * response: {"ok":true,"result":{...}}
- */
 void qc_protocol_handle(const char *req_line, const qc_proto_ctx_t *ctx,
                         char *out, size_t out_len);
 

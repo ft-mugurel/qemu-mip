@@ -1,17 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * qemu-connect — QEMU TCG plugin for agent interaction with guests.
- *
- * Args:
- *   socket=PATH
- *   socket_thread=on|off
- *   vga=on|off
- *   vga_refresh=on|off          allow get_console refresh:true (default on)
- *   vcpu_queue_timeout_ms=N     wait budget for refresh (default 250)
- */
 #include <qemu-plugin.h>
 
 #include "qemu-connect.h"
+#include "hypercall.h"
 #include "mem.h"
 #include "protocol.h"
 #include "queue.h"
@@ -32,6 +23,7 @@ static char g_socket_path[256];
 static bool g_socket_thread = true;
 static bool g_vga_enabled = true;
 static bool g_vga_refresh = true;
+static bool g_hypercall = true;
 static int g_queue_timeout_ms = QEMU_CONNECT_QUEUE_TIMEOUT_MS_DEFAULT;
 
 static bool parse_bool_arg(const char *val, bool default_val)
@@ -57,6 +49,7 @@ static void parse_args(int argc, char **argv)
     g_socket_thread = true;
     g_vga_enabled = true;
     g_vga_refresh = true;
+    g_hypercall = true;
     g_queue_timeout_ms = QEMU_CONNECT_QUEUE_TIMEOUT_MS_DEFAULT;
 
     for (int i = 0; i < argc; i++) {
@@ -72,6 +65,8 @@ static void parse_args(int argc, char **argv)
             g_vga_enabled = parse_bool_arg(a + 4, true);
         } else if (strncmp(a, "vga_refresh=", 12) == 0) {
             g_vga_refresh = parse_bool_arg(a + 12, true);
+        } else if (strncmp(a, "hypercall=", 10) == 0) {
+            g_hypercall = parse_bool_arg(a + 10, true);
         } else if (strncmp(a, "vcpu_queue_timeout_ms=", 22) == 0) {
             int v = atoi(a + 22);
             if (v > 0) {
@@ -98,18 +93,17 @@ static void vcpu_tb_exec(unsigned int vcpu_index, void *userdata)
 static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
 {
     (void)id;
-
     drain_queue();
 
     if (!g_socket_thread && g_server) {
         qc_server_poll(g_server);
     }
 
-    if (g_vga_enabled) {
-        qc_mem_instrument_tb(tb, &g_vga);
+    if (g_vga_enabled || g_hypercall) {
+        qc_mem_instrument_tb(tb, g_vga_enabled ? &g_vga : NULL, g_hypercall);
     }
 
-    if (g_vga_refresh && g_queue) {
+    if (g_queue) {
         qemu_plugin_register_vcpu_tb_exec_cb(tb, vcpu_tb_exec,
                                              QEMU_PLUGIN_CB_NO_REGS, NULL);
     }
@@ -120,6 +114,17 @@ static void vcpu_idle(qemu_plugin_id_t id, unsigned int vcpu_index)
     (void)id;
     (void)vcpu_index;
     drain_queue();
+}
+
+static void vcpu_discon(qemu_plugin_id_t id, unsigned int vcpu_index,
+                        enum qemu_plugin_discon_type type, uint64_t from_pc,
+                        uint64_t to_pc)
+{
+    (void)id;
+    (void)vcpu_index;
+    (void)from_pc;
+    (void)to_pc;
+    qc_discon_on_event((int)type);
 }
 
 static void plugin_exit(qemu_plugin_id_t id, void *userdata)
@@ -144,6 +149,8 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
 {
     parse_args(argc, argv);
     qc_vga_init(&g_vga);
+    qc_hypercall_init();
+    qc_discon_init();
 
     g_queue = qc_queue_create(g_queue_timeout_ms);
     if (!g_queue) {
@@ -155,6 +162,9 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     g_ctx.vga = &g_vga;
     g_ctx.queue = g_queue;
     g_ctx.vga_refresh_enabled = g_vga_refresh;
+    g_ctx.socket_thread = g_socket_thread;
+    g_ctx.vga_enabled = g_vga_enabled;
+    g_ctx.hypercall_enabled = g_hypercall;
 
     g_server = qc_server_start(g_socket_path, &g_ctx, g_socket_thread);
     if (!g_server) {
@@ -165,25 +175,24 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
         return 1;
     }
 
-    char msg[640];
+    char msg[768];
     snprintf(msg, sizeof(msg),
              "qemu-connect: installed (target=%s system=%s socket=%s "
-             "thread=%s vga=%s refresh=%s qtimeout=%dms proto=%d.%d)\n",
+             "thread=%s vga=%s refresh=%s hypercall=%s qtimeout=%dms "
+             "proto=%d.%d)\n",
              info && info->target_name ? info->target_name : "?",
              info && info->system_emulation ? "yes" : "no",
              qc_server_path(g_server),
              qc_server_uses_thread(g_server) ? "on" : "off",
-             g_vga_enabled ? "on" : "off",
-             g_vga_refresh ? "on" : "off", g_queue_timeout_ms,
+             g_vga_enabled ? "on" : "off", g_vga_refresh ? "on" : "off",
+             g_hypercall ? "on" : "off", g_queue_timeout_ms,
              QEMU_CONNECT_PROTO_MAJOR, QEMU_CONNECT_PROTO_MINOR);
     qemu_plugin_outs(msg);
 
-    if (g_vga_enabled || g_vga_refresh || !g_socket_thread) {
-        qemu_plugin_register_vcpu_tb_trans_cb(id, vcpu_tb_trans);
-    }
-    if (g_vga_refresh) {
-        qemu_plugin_register_vcpu_idle_cb(id, vcpu_idle);
-    }
+    /* Always instrument translate so queue can drain on exec. */
+    qemu_plugin_register_vcpu_tb_trans_cb(id, vcpu_tb_trans);
+    qemu_plugin_register_vcpu_idle_cb(id, vcpu_idle);
+    qemu_plugin_register_vcpu_discon_cb(id, QEMU_PLUGIN_DISCON_ALL, vcpu_discon);
     qemu_plugin_register_atexit_cb(id, plugin_exit, NULL);
     return 0;
 }

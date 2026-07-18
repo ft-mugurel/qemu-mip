@@ -30,9 +30,10 @@ static int usage(const char *argv0)
     fprintf(stderr,
             "Usage: %s [--socket PATH] <command> [args]\n"
             "Plugin socket commands:\n"
-            "  ping | version | get_console [--text-only] [--refresh]\n"
+            "  ping | version | status | get_agent_event\n"
+            "  get_console [--text-only] [--refresh]\n"
             "  expect <substring> [--timeout MS]\n"
-            "  raw <json-line>\n"
+            "  raw <json-line>   (also: mem_read via raw)\n"
             "QMP commands (use --qmp PATH):\n"
             "  qmp-ping | quit | key <qcode> | type <string>\n"
             "Orchestration:\n"
@@ -266,6 +267,12 @@ int main(int argc, char **argv)
     }
     if (strcmp(cmd, "version") == 0) {
         return request(sock, "{\"cmd\":\"version\"}");
+    }
+    if (strcmp(cmd, "status") == 0) {
+        return request(sock, "{\"cmd\":\"status\"}");
+    }
+    if (strcmp(cmd, "get_agent_event") == 0) {
+        return request(sock, "{\"cmd\":\"get_agent_event\"}");
     }
     if (strcmp(cmd, "get_console") == 0) {
         bool text_only = false;

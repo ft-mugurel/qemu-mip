@@ -137,3 +137,15 @@ CLI --socket /path   →  plugin (console, expect, ping)
 ```
 
 `qemu-connect run` opens both and prefers `quit` over `kill -9`.
+
+## mem_read + discontinuities (PR7)
+
+`mem_read` reuses the vCPU work queue (same as refresh). Exception/interrupt
+discontinuities are counted via `qemu_plugin_register_vcpu_discon_cb` and
+exposed on `status`.
+
+## Hypercall (PR8)
+
+Stores to phys `0xFEE1DEAD..+16` assemble an inline message. When `magic==QCNT`,
+the plugin records an agent event (`READY` / `EXIT` / `LOG`) for `status` /
+`get_agent_event`. Guests opt in; munux does not need to implement this.

@@ -6,8 +6,8 @@
 Coding agents can boot a kernel under QEMU and **observe / drive** it without a
 human watching the VGA window — and without forking QEMU.
 
-> Status: **PR5+PR6** — QMP keys/quit, `qemu-connect run` one-shot agent workflow.
-> Next: mem_read/discon (PR7), optional hypercall (PR8), polish (PR9).
+> Status: **PR7+PR8** — `mem_read`/`status`/discon stats, optional hypercall at `0xFEE1DEAD`.
+> Optional later: packaging polish (PR9).
 
 ## Why a plugin?
 
@@ -68,7 +68,8 @@ Plugin arguments:
 | `socket_thread=on\|off` | `on` | Dedicated poll thread (needed while guest is idle/`hlt`) |
 | `vga=on\|off` | `on` | Instrument stores to scrape VGA text at `0xB8000` |
 | `vga_refresh=on\|off` | `on` | Allow `get_console` with `refresh:true` |
-| `vcpu_queue_timeout_ms=N` | `250` | Max wait for vCPU refresh drain |
+| `vcpu_queue_timeout_ms=N` | `250` | Max wait for vCPU refresh/mem_read |
+| `hypercall=on\|off` | `on` | Scrape guest stores to `0xFEE1DEAD` |
 
 ## Layout
 
@@ -77,7 +78,8 @@ Plugin arguments:
 ├── plugin/           # TCG plugin sources → libqemu-connect.so
 │   ├── agent.c       # qemu_plugin_install entry
 │   ├── mem.c         # store callbacks → VGA scrape
-│   ├── queue.c       # vCPU work queue (refresh)
+│   ├── queue.c       # vCPU work queue (refresh/mem_read)
+│   ├── hypercall.c  # 0xFEE1DEAD agent messages
 │   ├── vga.c         # VGA text shadow (+ mutex)
 │   ├── server.c      # Unix socket server (thread)
 │   └── protocol.c    # request/response handlers

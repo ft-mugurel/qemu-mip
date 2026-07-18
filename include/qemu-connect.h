@@ -1,33 +1,31 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * Shared constants for the qemu-connect agent protocol.
- * Used by the TCG plugin and host CLI.
- */
 #ifndef QEMU_CONNECT_H
 #define QEMU_CONNECT_H
 
 #define QEMU_CONNECT_NAME        "qemu-connect"
 #define QEMU_CONNECT_PROTO_MAJOR 0
-#define QEMU_CONNECT_PROTO_MINOR 3
+#define QEMU_CONNECT_PROTO_MINOR 4
 
-/* Default Unix socket path if the plugin is loaded without socket= */
 #define QEMU_CONNECT_DEFAULT_SOCK "/tmp/qemu-connect.sock"
-
-/* Max JSON response for get_console (text + metadata). */
 #define QEMU_CONNECT_RESP_MAX    (32 * 1024)
-
-/* Default vCPU queue wait for refresh/mem ops (milliseconds). */
 #define QEMU_CONNECT_QUEUE_TIMEOUT_MS_DEFAULT 250
+#define QEMU_CONNECT_MEM_READ_MAX 4096
 
-/* VGA text mode (PC BIOS / many hobby kernels) */
 #define QEMU_CONNECT_VGA_TEXT_PHYS 0x000B8000ULL
 #define QEMU_CONNECT_VGA_COLS      80
 #define QEMU_CONNECT_VGA_ROWS      25
-#define QEMU_CONNECT_VGA_CELL      2 /* char + attribute */
+#define QEMU_CONNECT_VGA_CELL      2
 #define QEMU_CONNECT_VGA_BYTES \
     (QEMU_CONNECT_VGA_COLS * QEMU_CONNECT_VGA_ROWS * QEMU_CONNECT_VGA_CELL)
 
-/* Optional guest hypercall magic (future): store to this phys addr */
+/* Optional guest hypercall window (16-byte inline ABI). */
 #define QEMU_CONNECT_HYPERCALL_PHYS 0xFEE1DEADULL
+#define QEMU_CONNECT_HYPERCALL_SIZE 16
+#define QEMU_CONNECT_HYPERCALL_MAGIC 0x544E4351u /* 'QCNT' LE */
 
-#endif /* QEMU_CONNECT_H */
+/* Hypercall cmd values (guest → host). */
+#define QEMU_CONNECT_HC_READY 1u
+#define QEMU_CONNECT_HC_EXIT  2u
+#define QEMU_CONNECT_HC_LOG   3u
+
+#endif

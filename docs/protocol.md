@@ -1,69 +1,63 @@
-# Control protocol (v0.3)
+# Control protocol (v0.4)
 
-Transport: **Unix domain stream socket**, one JSON object per line (UTF-8).
+Unix stream socket, one JSON object per line. **Trusted local socket** — no auth.
 
-Default path: `/tmp/qemu-connect.sock`  
-Override: `-plugin …,socket=/path/to.sock`
-
-## Framing
-
-- One JSON object **per line** (`\n`)
-- Max request line: **8192** bytes
-- Responses for `get_console` may be up to ~32 KiB
+Default: `/tmp/qemu-connect.sock`
 
 ## Commands
 
-| cmd | Status |
+| cmd | Notes |
 |-----|--------|
-| `ping` | ok |
-| `version` | ok (+ refresh flags) |
-| `get_console` | shadow default; optional `refresh` |
+| `ping` | liveness |
+| `version` | proto + counters |
+| `status` | full health (discon, hypercall, flags) |
+| `get_console` | shadow; optional `refresh:true` |
+| `mem_read` | `phys` + `len` (1..4096); needs live vCPU |
+| `get_agent_event` | pop last hypercall event |
 
-### get_console (shadow — default)
-
-```text
-→ {"cmd":"get_console"}
-← {"ok":true,"result":{...,"source":"shadow","text":"..."}}
-```
-
-Never blocks on the vCPU. Safe after permanent `hlt`.
-
-### get_console (refresh — PR3)
+### mem_read
 
 ```text
-→ {"cmd":"get_console","refresh":true}
-← {"ok":true,"result":{...,"source":"refresh","text":"..."}}
+→ {"cmd":"mem_read","phys":753664,"len":16}
+← {"ok":true,"result":{"phys":753664,"len":16,"hex":"2a07..."}}
 ← {"ok":false,"error":"vcpu_idle_timeout"}
-← {"ok":false,"error":"hwaddr_read_failed","result":{"code":"INVALID_ADDRESS","code_num":4}}
-← {"ok":false,"error":"refresh disabled"}
 ```
 
-Requires plugin arg `vga_refresh=on` (default). Uses a vCPU-side queue with
-timeout (`vcpu_queue_timeout_ms`, default **250**).
+`phys` may be decimal or `0x...`. After permanent guest `hlt`, expect timeout unless a drain path runs.
 
-| `code` | Meaning |
-|--------|---------|
-| `OK` | success |
-| `ERROR` | unexpected |
-| `DEVICE_ERROR` | device fault |
-| `ACCESS_DENIED` | permission |
-| `INVALID_ADDRESS` | bad phys |
-| `INVALID_ADDRESS_SPACE` | wrong AS |
+### status
 
-## Plugin arguments
+Includes `discon.{exception,interrupt,hostcall,total}` and `agent.{count,last_cmd,last_name,pending_event}`.
 
-| Arg | Default | Meaning |
-|-----|---------|---------|
-| `socket=PATH` | `/tmp/qemu-connect.sock` | Control socket |
-| `socket_thread=on\|off` | `on` | Dedicated poll thread |
-| `vga=on\|off` | `on` | Store scrape at `0xB8000` |
-| `vga_refresh=on\|off` | `on` | Allow `refresh:true` |
-| `vcpu_queue_timeout_ms=N` | `250` | Max wait for refresh drain |
+### Hypercall ABI (optional guest)
 
-## CLI helpers (host)
+Physical window **`0xFEE1DEAD`**, **16 bytes**, little-endian:
 
-```sh
-qemu-connect expect 'substring' --timeout 60000 --socket PATH
-qemu-connect get_console --text-only
-qemu-connect get_console --refresh
+| Offset | Field | Value |
+|--------|--------|--------|
+| 0 | magic | `0x544E4351` (`QCNT`) |
+| 4 | cmd | `1=READY`, `2=EXIT`, `3=LOG` |
+| 8 | status | guest-defined |
+| 12 | reserved | 0 |
+
+Guest example (C):
+
+```c
+struct { uint32_t magic, cmd, status, reserved; } msg = {
+  .magic = 0x544E4351u, .cmd = 2, .status = 0, .reserved = 0
+};
+*(volatile uint32_t *)0xFEE1DEADu = msg.magic; /* or memcpy to that address */
 ```
+
+No guest pointers in v1. Plugin arg `hypercall=on|off` (default on).
+
+## Plugin args
+
+| Arg | Default |
+|-----|---------|
+| `socket=` | `/tmp/qemu-connect.sock` |
+| `socket_thread=` | on |
+| `vga=` | on |
+| `vga_refresh=` | on |
+| `hypercall=` | on |
+| `vcpu_queue_timeout_ms=` | 250 |
