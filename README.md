@@ -30,7 +30,21 @@ Compile-only is not enough for kernels. This closes that gap.
 
 ---
 
-## Install / build
+## Install (easy)
+
+```sh
+git clone git@github.com:ft-mugurel/qemu-mip.git
+cd qemu-mip
+./scripts/install.sh          # → ~/.local/bin/qemu-connect (+ MCP if Node present)
+export PATH="$HOME/.local/bin:$PATH"
+export QEMU_CONNECT_ROOT="$PWD"
+make -C test/munux iso disk   # once (clone munux into test/munux first if needed)
+qemu-connect guest help
+```
+
+Full details: **[INSTALL.md](INSTALL.md)**.
+
+## Build (from source tree)
 
 **Needs:** QEMU with plugins (TCG), `gcc`, `make`, glib, `qemu-plugin.h`  
 Optional for MCP: Node.js 18+

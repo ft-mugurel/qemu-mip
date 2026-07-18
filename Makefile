@@ -29,7 +29,8 @@ PLUGIN_SRCS    := \
 
 PLUGIN_OBJS    := $(patsubst $(PLUGIN_DIR)/%.c,$(BUILD_DIR)/%.o,$(PLUGIN_SRCS))
 CLI_OBJS       := $(BUILD_DIR)/cli_main.o $(BUILD_DIR)/cli_qmp.o \
-	$(BUILD_DIR)/cli_run.o $(BUILD_DIR)/cli_session.o
+	$(BUILD_DIR)/cli_run.o $(BUILD_DIR)/cli_session.o \
+	$(BUILD_DIR)/cli_paths.o
 VGA_UNIT_OBJS  := $(BUILD_DIR)/vga.o $(BUILD_DIR)/test_vga_unit.o
 
 .PHONY: all plugin cli guest clean dirs help test-load test-ping test-vga-unit \
@@ -74,6 +75,9 @@ $(BUILD_DIR)/cli_run.o: $(CLI_DIR)/run.c | dirs
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(BUILD_DIR)/cli_session.o: $(CLI_DIR)/session.c | dirs
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/cli_paths.o: $(CLI_DIR)/paths.c | dirs
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(BUILD_DIR)/test_vga_unit.o: $(TEST_DIR)/test_vga_unit.c | dirs
@@ -133,3 +137,68 @@ smoke: test-ping test-vga-unit test-qmp
 	else \
 		echo "SKIP munux"; \
 	fi
+
+# --------------------------------------------------------------------------- #
+# Install (easy default: make install  → ~/.local)
+# --------------------------------------------------------------------------- #
+
+PREFIX        ?= $(HOME)/.local
+BINDIR        := $(PREFIX)/bin
+LIBDIR        := $(PREFIX)/lib/qemu-connect
+SHAREDIR      := $(PREFIX)/share/qemu-connect
+MCPDIR        := $(SHAREDIR)/mcp
+
+.PHONY: install uninstall install-mcp install-all
+
+install: plugin cli
+	@mkdir -p "$(BINDIR)" "$(LIBDIR)" "$(SHAREDIR)"
+	install -m 755 "$(BUILD_DIR)/$(CLI_NAME)" "$(BINDIR)/$(CLI_NAME)"
+	install -m 755 "$(BUILD_DIR)/$(PLUGIN_NAME)" "$(LIBDIR)/$(PLUGIN_NAME)"
+	install -m 644 README.md AGENTS.md LICENSE "$(SHAREDIR)/" 2>/dev/null || true
+	@# small env helper for shells
+	@printf '%s\n' \
+		'# qemu-connect environment (optional: source this)' \
+		'export QEMU_CONNECT_HOME="$(SHAREDIR)"' \
+		'export QEMU_CONNECT_PLUGIN="$(LIBDIR)/$(PLUGIN_NAME)"' \
+		'export QEMU_CONNECT_ROOT="$${QEMU_CONNECT_ROOT:-$(CURDIR)}"' \
+		> "$(SHAREDIR)/env.sh"
+	@chmod 644 "$(SHAREDIR)/env.sh"
+	@echo ""
+	@echo "Installed:"
+	@echo "  CLI     $(BINDIR)/$(CLI_NAME)"
+	@echo "  plugin  $(LIBDIR)/$(PLUGIN_NAME)"
+	@echo "  share   $(SHAREDIR)/"
+	@echo ""
+	@echo "Ensure $(BINDIR) is on your PATH, then:"
+	@echo "  export QEMU_CONNECT_ROOT=$(CURDIR)   # workspace with test/munux"
+	@echo "  qemu-connect guest help"
+	@echo ""
+	@echo "Optional MCP:  make install-mcp PREFIX=$(PREFIX)"
+
+install-mcp:
+	@command -v npm >/dev/null || { echo "npm required for MCP install"; exit 1; }
+	@command -v node >/dev/null || { echo "node required for MCP install"; exit 1; }
+	@cd mcp && npm install && npm run build
+	@mkdir -p "$(MCPDIR)" "$(BINDIR)"
+	@cp -a mcp/package.json mcp/package-lock.json mcp/dist "$(MCPDIR)/"
+	@rm -rf "$(MCPDIR)/node_modules"
+	@cd "$(MCPDIR)" && npm install --omit=dev --silent
+	@printf '%s\n' \
+		'#!/usr/bin/env bash' \
+		'set -euo pipefail' \
+		'exec node "$(MCPDIR)/dist/index.js" "$$@"' \
+		> "$(BINDIR)/qemu-connect-mcp"
+	@chmod 755 "$(BINDIR)/qemu-connect-mcp"
+	@bash scripts/gen-mcp-config.sh --prefix "$(PREFIX)" --root "$(CURDIR)" --out "$(SHAREDIR)/mcp.json"
+	@echo ""
+	@echo "MCP installed:"
+	@echo "  $(BINDIR)/qemu-connect-mcp"
+	@echo "  config: $(SHAREDIR)/mcp.json"
+	@echo "Point Cursor/Claude MCP settings at that file (or merge its mcpServers entry)."
+
+install-all: install install-mcp
+
+uninstall:
+	rm -f "$(BINDIR)/$(CLI_NAME)" "$(BINDIR)/qemu-connect-mcp"
+	rm -rf "$(LIBDIR)" "$(SHAREDIR)"
+	@echo "Uninstalled from $(PREFIX)"

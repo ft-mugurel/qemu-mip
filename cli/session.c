@@ -13,6 +13,7 @@
 
 #include "qemu-connect.h"
 #include "qmp.h"
+#include "paths.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -409,9 +410,9 @@ static void usage(void)
 static int session_start(int argc, char **argv)
 {
     const char *id = "default";
-    const char *iso = "test/munux/build/kernel.iso";
-    const char *disk = "test/munux/build/disk.img";
-    const char *plugin = "build/libqemu-connect.so";
+    const char *iso = qc_default_iso();
+    const char *disk = qc_default_disk();
+    const char *plugin = qc_default_plugin();
     const char *qemu_bin = "qemu-system-x86_64";
     const char *mem = "512M";
     int timeout_ms = 60000;

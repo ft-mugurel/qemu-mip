@@ -7,6 +7,7 @@
 
 #include "qemu-connect.h"
 #include "qmp.h"
+#include "paths.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -420,7 +421,7 @@ int qc_cmd_run(int argc, char **argv)
 {
     const char *iso = NULL;
     const char *disk = NULL;
-    const char *plugin = "build/libqemu-connect.so";
+    const char *plugin = qc_default_plugin();
     const char *mem = "512M";
     const char *qemu_bin = "qemu-system-x86_64";
     int timeout_ms = 60000;
@@ -491,9 +492,9 @@ int qc_cmd_run(int argc, char **argv)
  */
 int qc_cmd_guest(int argc, char **argv)
 {
-    const char *iso = "test/munux/build/kernel.iso";
-    const char *disk = "test/munux/build/disk.img";
-    const char *plugin = "build/libqemu-connect.so";
+    const char *iso = qc_default_iso();
+    const char *disk = qc_default_disk();
+    const char *plugin = qc_default_plugin();
     int timeout_ms = 60000;
 
     /* optional overrides as flags before command words */
