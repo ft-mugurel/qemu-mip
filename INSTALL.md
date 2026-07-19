@@ -64,3 +64,38 @@ make uninstall
 - QEMU with plugin support (`qemu-system-x86_64 -plugin help`)
 - gcc, make, glib-2.0, `qemu-plugin.h`
 - Optional: Node.js 18+ for MCP
+
+## Point at your own munux tree (not the bundled test clone)
+
+```sh
+export QEMU_CONNECT_MUNUX=/absolute/path/to/your/munux
+export QEMU_CONNECT_ROOT=/absolute/path/to/qemu-mip
+export QEMU_CONNECT_PLUGIN=$HOME/.local/lib/qemu-connect/libqemu-connect.so
+
+make -C "$QEMU_CONNECT_MUNUX" iso disk
+qemu-connect guest help
+```
+
+### Grok MCP
+
+```toml
+[mcp_servers.qemu-connect]
+command = "node"
+args = ["/home/YOU/.local/share/qemu-connect/mcp/dist/index.js"]
+enabled = true
+tool_timeout_sec = 300
+
+[mcp_servers.qemu-connect.env]
+QEMU_CONNECT_ROOT = "/home/YOU/path/to/qemu-mip"
+QEMU_CONNECT_PLUGIN = "/home/YOU/.local/lib/qemu-connect/libqemu-connect.so"
+QEMU_CONNECT_MUNUX = "/home/YOU/path/to/your/munux"
+```
+
+```sh
+./scripts/gen-mcp-config.sh \
+  --root /path/to/qemu-mip \
+  --munux /path/to/your/munux \
+  --out ~/.local/share/qemu-connect/mcp.json
+```
+
+Then: `grok mcp remove qemu-connect` and re-add, or edit config.toml; in Grok `/mcps` press `r`.

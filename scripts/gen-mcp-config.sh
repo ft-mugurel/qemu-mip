@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# Generate an MCP host config with absolute paths.
+# Generate MCP host config with absolute paths.
 set -euo pipefail
 
 PREFIX="${HOME}/.local"
 ROOT=""
+MUNUX=""
 OUT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --prefix) PREFIX="$2"; shift 2 ;;
     --root) ROOT="$2"; shift 2 ;;
+    --munux) MUNUX="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     -h|--help)
-      echo "Usage: gen-mcp-config.sh --root REPO [--prefix ~/.local] [--out path]"
+      echo "Usage: gen-mcp-config.sh --root TOOL_REPO [--munux MUNUX_REPO] [--prefix ~/.local] [--out path]"
       exit 0
       ;;
     *) echo "unknown arg $1"; exit 1 ;;
@@ -23,14 +25,14 @@ if [[ -z "$ROOT" ]]; then
   ROOT=$(cd "$(dirname "$0")/.." && pwd)
 fi
 ROOT=$(cd "$ROOT" && pwd)
-PREFIX=$(cd "$PREFIX" 2>/dev/null && pwd || echo "$PREFIX")
 
 MCP_JS="$PREFIX/share/qemu-connect/mcp/dist/index.js"
-if [[ ! -f "$MCP_JS" ]]; then
-  # dev fallback
-  if [[ -f "$ROOT/mcp/dist/index.js" ]]; then
-    MCP_JS="$ROOT/mcp/dist/index.js"
-  fi
+if [[ ! -f "$MCP_JS" && -f "$ROOT/mcp/dist/index.js" ]]; then
+  MCP_JS="$ROOT/mcp/dist/index.js"
+fi
+PLUGIN="$PREFIX/lib/qemu-connect/libqemu-connect.so"
+if [[ ! -f "$PLUGIN" && -f "$ROOT/build/libqemu-connect.so" ]]; then
+  PLUGIN="$ROOT/build/libqemu-connect.so"
 fi
 
 if [[ -z "$OUT" ]]; then
@@ -38,6 +40,15 @@ if [[ -z "$OUT" ]]; then
 fi
 
 mkdir -p "$(dirname "$OUT")"
+
+if [[ -n "$MUNUX" ]]; then
+  MUNUX=$(cd "$MUNUX" && pwd)
+  ENV_EXTRA=",
+        \"QEMU_CONNECT_MUNUX\": \"${MUNUX}\""
+else
+  ENV_EXTRA=""
+fi
+
 cat > "$OUT" <<JSON
 {
   "mcpServers": {
@@ -48,7 +59,7 @@ cat > "$OUT" <<JSON
       ],
       "env": {
         "QEMU_CONNECT_ROOT": "${ROOT}",
-        "QEMU_CONNECT_PLUGIN": "${PREFIX}/lib/qemu-connect/libqemu-connect.so"
+        "QEMU_CONNECT_PLUGIN": "${PLUGIN}"${ENV_EXTRA}
       }
     }
   }
@@ -56,5 +67,10 @@ cat > "$OUT" <<JSON
 JSON
 
 echo "Wrote $OUT"
-echo "  QEMU_CONNECT_ROOT=$ROOT"
-echo "  MCP entry: $MCP_JS"
+echo "  QEMU_CONNECT_ROOT   = $ROOT"
+echo "  QEMU_CONNECT_PLUGIN = $PLUGIN"
+if [[ -n "$MUNUX" ]]; then
+  echo "  QEMU_CONNECT_MUNUX  = $MUNUX"
+else
+  echo "  QEMU_CONNECT_MUNUX  = (unset — uses \$ROOT/test/munux)"
+fi

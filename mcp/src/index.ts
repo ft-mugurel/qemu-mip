@@ -8,7 +8,14 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
-import { getRepoRoot, getCliPath, getPluginPath } from "./paths.js";
+import {
+  getRepoRoot,
+  getCliPath,
+  getPluginPath,
+  getMunuxRoot,
+  getMunuxIso,
+  getMunuxDisk,
+} from "./paths.js";
 import { runMake, runQemuConnect, type CliResult } from "./run-cli.js";
 
 const server = new McpServer({
@@ -76,17 +83,23 @@ server.registerTool(
       const root = getRepoRoot();
       const cli = getCliPath(root);
       const plugin = getPluginPath(root);
-      const iso = path.join(root, "test/munux/build/kernel.iso");
-      const disk = path.join(root, "test/munux/build/disk.img");
+      const munux = getMunuxRoot();
+      const iso = getMunuxIso();
+      const disk = getMunuxDisk();
       return toolJson({
         ok: true,
         repo_root: root,
         cli: { path: cli, exists: fs.existsSync(cli) },
         plugin: { path: plugin, exists: fs.existsSync(plugin) },
+        munux_root: { path: munux, exists: !!(munux && fs.existsSync(munux)) },
         munux_iso: { path: iso, exists: fs.existsSync(iso) },
         munux_disk: { path: disk, exists: fs.existsSync(disk) },
         env: {
           QEMU_CONNECT_ROOT: process.env.QEMU_CONNECT_ROOT ?? null,
+          QEMU_CONNECT_MUNUX: process.env.QEMU_CONNECT_MUNUX ?? null,
+          QEMU_CONNECT_ISO: process.env.QEMU_CONNECT_ISO ?? null,
+          QEMU_CONNECT_DISK: process.env.QEMU_CONNECT_DISK ?? null,
+          QEMU_CONNECT_PLUGIN: process.env.QEMU_CONNECT_PLUGIN ?? null,
         },
         tools: [
           "qemu_connect_info",
@@ -137,13 +150,15 @@ server.registerTool(
       }
     }
     if (mode === "all" || mode === "munux") {
-      const munux = path.join(root, "test/munux");
-      if (!fs.existsSync(munux)) {
+      const munux = getMunuxRoot();
+      if (!munux || !fs.existsSync(munux)) {
         return toolJson(
           {
             ok: false,
-            error: `missing ${munux}`,
-            hint: "git clone git@github.com:ft-mugurel/munux.git test/munux",
+            error: "munux tree not found",
+            hint:
+              "Set MCP env QEMU_CONNECT_MUNUX=/absolute/path/to/your/munux " +
+              "(or clone into $QEMU_CONNECT_ROOT/test/munux)",
             steps,
           },
           true
@@ -177,7 +192,15 @@ server.registerTool(
     },
   },
   async ({ cmd, timeout_ms }) => {
-    const args = ["guest"];
+    const args = [
+      "guest",
+      "--iso",
+      getMunuxIso(),
+      "--disk",
+      getMunuxDisk(),
+      "--plugin",
+      getPluginPath(getRepoRoot()),
+    ];
     if (cmd?.trim()) {
       args.push(...cmd.trim().split(/\s+/));
     }
@@ -208,8 +231,8 @@ server.registerTool(
   },
   async ({ iso, disk, steps, show, timeout_ms }) => {
     const root = getRepoRoot();
-    const defaultIso = path.join(root, "test/munux/build/kernel.iso");
-    const defaultDisk = path.join(root, "test/munux/build/disk.img");
+    const defaultIso = getMunuxIso();
+    const defaultDisk = getMunuxDisk();
     const isoPath = iso
       ? path.isAbsolute(iso)
         ? iso
@@ -265,7 +288,16 @@ server.registerTool(
     },
   },
   async ({ session_id, timeout_ms, no_wait }) => {
-    const args = ["session", "start"];
+    const args = [
+      "session",
+      "start",
+      "--iso",
+      getMunuxIso(),
+      "--disk",
+      getMunuxDisk(),
+      "--plugin",
+      getPluginPath(getRepoRoot()),
+    ];
     if (session_id) {
       args.push("--id", session_id);
     }

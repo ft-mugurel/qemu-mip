@@ -24,7 +24,22 @@ Preferred checks:
 ./build/qemu-connect session stop
 ```
 
+## If munux lives in another folder
+
+MCP/CLI default to `$QEMU_CONNECT_ROOT/test/munux` (often an **old** clone).
+Point at **your** tree:
+
+```sh
+export QEMU_CONNECT_MUNUX=/absolute/path/to/YOUR/munux
+export QEMU_CONNECT_ROOT=/absolute/path/to/qemu-mip   # this tool repo
+export QEMU_CONNECT_PLUGIN=$HOME/.local/lib/qemu-connect/libqemu-connect.so
+make -C "$QEMU_CONNECT_MUNUX" iso disk
+```
+
+Put the same env under Grok `[mcp_servers.qemu-connect.env]` (see INSTALL.md).
+
 ## One-time / after kernel changes
+
 
 ```sh
 # From qemu-connect repo root
