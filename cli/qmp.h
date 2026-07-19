@@ -23,16 +23,23 @@ int qc_qmp_execute(qc_qmp_t *q, const char *cmd_json, char *out, size_t out_len)
 /* Convenience: {"execute":"quit"} — treats peer close / SHUTDOWN as success. */
 int qc_qmp_quit(qc_qmp_t *q);
 
-/* send-key with one qcode (e.g. "ret", "a", "esc"). */
+/* send-key with one qcode (e.g. "ret", "a", "esc", "up", "down"). */
 int qc_qmp_send_key(qc_qmp_t *q, const char *qcode);
 
 /*
- * Type a string: printable ASCII + map \n to ret.
+ * Type a string: printable ASCII (incl. : ! shell/vi punct) + map \n to ret.
+ * Does NOT auto-append Enter after the string — caller may send "ret".
  * delay_ms between keys (0 ok).
  */
 int qc_qmp_type(qc_qmp_t *q, const char *text, int delay_ms);
 
-/* Map a single char / named key to qcode; returns static string or NULL. */
+/*
+ * Type @text then optionally press Enter (ret).
+ * Prefer this for shell lines so agents never leave a half-typed command.
+ */
+int qc_qmp_type_line(qc_qmp_t *q, const char *text, int delay_ms, bool enter);
+
+/* Map a single char to base qcode; returns static string or NULL. */
 const char *qc_qmp_char_to_qcode(int ch);
 
 #endif

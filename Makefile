@@ -155,12 +155,18 @@ install: plugin cli
 	install -m 755 "$(BUILD_DIR)/$(CLI_NAME)" "$(BINDIR)/$(CLI_NAME)"
 	install -m 755 "$(BUILD_DIR)/$(PLUGIN_NAME)" "$(LIBDIR)/$(PLUGIN_NAME)"
 	install -m 644 README.md AGENTS.md LICENSE "$(SHAREDIR)/" 2>/dev/null || true
-	@# small env helper for shells
+	@# small env helper for shells (sources project .qemu-connect.local if present)
 	@printf '%s\n' \
 		'# qemu-connect environment (optional: source this)' \
 		'export QEMU_CONNECT_HOME="$(SHAREDIR)"' \
-		'export QEMU_CONNECT_PLUGIN="$(LIBDIR)/$(PLUGIN_NAME)"' \
+		'export QEMU_CONNECT_PLUGIN="$${QEMU_CONNECT_PLUGIN:-$(LIBDIR)/$(PLUGIN_NAME)}"' \
 		'export QEMU_CONNECT_ROOT="$${QEMU_CONNECT_ROOT:-$(CURDIR)}"' \
+		'if [ -f "$$QEMU_CONNECT_ROOT/.qemu-connect.local" ]; then' \
+		'  set -a; . "$$QEMU_CONNECT_ROOT/.qemu-connect.local"; set +a' \
+		'fi' \
+		'if [ -f "$$HOME/.config/qemu-connect/env" ]; then' \
+		'  set -a; . "$$HOME/.config/qemu-connect/env"; set +a' \
+		'fi' \
 		> "$(SHAREDIR)/env.sh"
 	@chmod 644 "$(SHAREDIR)/env.sh"
 	@echo ""
@@ -170,11 +176,14 @@ install: plugin cli
 	@echo "  share   $(SHAREDIR)/"
 	@echo ""
 	@echo "Ensure $(BINDIR) is on your PATH, then:"
-	@echo "  export QEMU_CONNECT_ROOT=$(CURDIR)   # workspace with test/munux"
+	@echo "  # pin your kernel (recommended):"
+	@echo "  echo 'QEMU_CONNECT_MUNUX=/path/to/your/KFS' > $(CURDIR)/.qemu-connect.local"
 	@echo "  qemu-connect guest help"
 	@echo ""
 	@echo "Optional MCP:  make install-mcp PREFIX=$(PREFIX)"
 
+# Pass munux path: make install-mcp QEMU_CONNECT_MUNUX=/path/to/KFS
+# Or put it in $(CURDIR)/.qemu-connect.local (preferred; survives reinstall).
 install-mcp:
 	@command -v npm >/dev/null || { echo "npm required for MCP install"; exit 1; }
 	@command -v node >/dev/null || { echo "node required for MCP install"; exit 1; }
@@ -183,18 +192,39 @@ install-mcp:
 	@cp -a mcp/package.json mcp/package-lock.json mcp/dist "$(MCPDIR)/"
 	@rm -rf "$(MCPDIR)/node_modules"
 	@cd "$(MCPDIR)" && npm install --omit=dev --silent
+	@# Wrapper always loads .qemu-connect.local so reinstall cannot drop munux path
 	@printf '%s\n' \
 		'#!/usr/bin/env bash' \
 		'set -euo pipefail' \
+		'ROOT="$${QEMU_CONNECT_ROOT:-$(CURDIR)}"' \
+		'export QEMU_CONNECT_ROOT="$$ROOT"' \
+		'if [[ -f "$$ROOT/.qemu-connect.local" ]]; then' \
+		'  set -a; # shellcheck disable=SC1091' \
+		'  source "$$ROOT/.qemu-connect.local"' \
+		'  set +a' \
+		'fi' \
+		'if [[ -f "$${HOME}/.config/qemu-connect/env" ]]; then' \
+		'  set -a; # shellcheck disable=SC1091' \
+		'  source "$${HOME}/.config/qemu-connect/env"' \
+		'  set +a' \
+		'fi' \
+		'export QEMU_CONNECT_PLUGIN="$${QEMU_CONNECT_PLUGIN:-$(LIBDIR)/$(PLUGIN_NAME)}"' \
 		'exec node "$(MCPDIR)/dist/index.js" "$$@"' \
 		> "$(BINDIR)/qemu-connect-mcp"
 	@chmod 755 "$(BINDIR)/qemu-connect-mcp"
-	@bash scripts/gen-mcp-config.sh --prefix "$(PREFIX)" --root "$(CURDIR)" --out "$(SHAREDIR)/mcp.json"
+	@MUNUX_ARG=""; \
+	if [ -n "$${QEMU_CONNECT_MUNUX:-}" ]; then MUNUX_ARG="--munux $$QEMU_CONNECT_MUNUX"; \
+	elif [ -f "$(CURDIR)/.qemu-connect.local" ]; then \
+	  M=$$(grep -E '^[[:space:]]*(export[[:space:]]+)?QEMU_CONNECT_MUNUX=' "$(CURDIR)/.qemu-connect.local" | tail -1 | sed -E 's/^[^=]+=//;s/^["'\'']//;s/["'\'']$$//'); \
+	  if [ -n "$$M" ]; then MUNUX_ARG="--munux $$M"; fi; \
+	fi; \
+	bash scripts/gen-mcp-config.sh --prefix "$(PREFIX)" --root "$(CURDIR)" $$MUNUX_ARG --out "$(SHAREDIR)/mcp.json"
 	@echo ""
 	@echo "MCP installed:"
 	@echo "  $(BINDIR)/qemu-connect-mcp"
 	@echo "  config: $(SHAREDIR)/mcp.json"
 	@echo "Point Cursor/Claude MCP settings at that file (or merge its mcpServers entry)."
+	@echo "Kernel path: QEMU_CONNECT_MUNUX or $(CURDIR)/.qemu-connect.local"
 
 install-all: install install-mcp
 

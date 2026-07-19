@@ -19,38 +19,50 @@ Preferred checks:
 ./build/qemu-connect guest help
 
 # several commands (faster)
-./build/qemu-connect session start
+./build/qemu-connect session start --prompt '$'   # KFS shell
 ./build/qemu-connect session cmd help
+./build/qemu-connect session type ':w' --no-enter # vi ex-mode chars (maps ':')
+./build/qemu-connect session key esc
 ./build/qemu-connect session stop
 ```
 
-## If munux lives in another folder
+Typing: **Enter is the default** for `type` / `session type` / `session cmd`.
+Use `--no-enter` / MCP `enter: false` only for partial input (vi insert).
+Punctuation map includes **`:` `!`** and common shell/vi symbols.
 
-MCP/CLI default to `$QEMU_CONNECT_ROOT/test/munux` (often an **old** clone).
-Point at **your** tree:
+## If munux lives in another folder (recommended)
+
+**Do not** rely on `$QEMU_CONNECT_ROOT/test/munux` — that is often a stale clone.
+
+**Preferred (survives reinstall / missing shell env):** pin the tree in
+`.qemu-connect.local` at the qemu-connect repo root (gitignored):
+
+```sh
+cat > .qemu-connect.local <<'EOF'
+QEMU_CONNECT_ROOT=/absolute/path/to/qemu-connect
+QEMU_CONNECT_MUNUX=/absolute/path/to/YOUR/munux-or-KFS
+QEMU_CONNECT_PLUGIN=$HOME/.local/lib/qemu-connect/libqemu-connect.so
+EOF
+```
+
+Also supported: process env, `~/.config/qemu-connect/env`, and Grok
+`[mcp_servers.qemu-connect.env]` (see INSTALL.md).
 
 ```sh
 export QEMU_CONNECT_MUNUX=/absolute/path/to/YOUR/munux
-export QEMU_CONNECT_ROOT=/absolute/path/to/qemu-mip   # this tool repo
-export QEMU_CONNECT_PLUGIN=$HOME/.local/lib/qemu-connect/libqemu-connect.so
+export QEMU_CONNECT_ROOT=/absolute/path/to/qemu-connect
 make -C "$QEMU_CONNECT_MUNUX" iso disk
 ```
 
-Put the same env under Grok `[mcp_servers.qemu-connect.env]` (see INSTALL.md).
+`guest` / `session` print the resolved ISO path on stderr — **check it** before
+trusting results.
 
 ## One-time / after kernel changes
-
 
 ```sh
 # From qemu-connect repo root
 make plugin cli
-make -C test/munux iso disk
-```
-
-Clone munux if missing:
-
-```sh
-git clone git@github.com:ft-mugurel/munux.git test/munux
+make -C "$QEMU_CONNECT_MUNUX" iso disk   # or: make -C /path/to/KFS iso disk
 ```
 
 ## Simplest commands (use these)

@@ -13,41 +13,72 @@ description: >
 
 **Compile ≠ works.** After kernel/boot/shell/FS changes, run a guest check with **exit 0**.
 
+## Kernel path (critical)
+
+Guest defaults come from, in order:
+
+1. `QEMU_CONNECT_ISO` / `QEMU_CONNECT_DISK`
+2. `QEMU_CONNECT_MUNUX` env
+3. **`$QEMU_CONNECT_ROOT/.qemu-connect.local`** (project pin)
+4. `~/.config/qemu-connect/env`
+5. Fallback only: `$ROOT/test/munux` (often a stale clone — **avoid**)
+
+This machine’s dev kernel is pinned in `.qemu-connect.local`:
+
+`QEMU_CONNECT_MUNUX=/home/mtu/MTU/xAI/trace/test1-2/KFS`
+
+Before testing, confirm the boot line:
+
+```text
+guest: munux  iso=.../test1-2/KFS/build/kernel.iso  disk=.../test1-2/KFS/build/disk.img
+```
+
+If you see `.../qemu-connect/test/munux/...`, the pin is missing — fix `.qemu-connect.local` or env.
+
+Rebuild guest after kernel edits:
+
+```sh
+make -C /home/mtu/MTU/xAI/trace/test1-2/KFS iso disk
+```
+
 ## Default commands (preferred)
 
 ### Multi-command (P0 — use this for several shell cmds)
 
 ```sh
-./build/qemu-connect session start
-./build/qemu-connect session cmd help
-./build/qemu-connect session cmd ls
-./build/qemu-connect session stop
+qemu-connect session start --prompt '$'   # KFS; or omit if .qemu-connect.local sets it
+qemu-connect session cmd help
+qemu-connect session cmd ls
+# vi-style: keys without shell prompt wait
+qemu-connect session key esc
+qemu-connect session type ':wq' --enter
+qemu-connect session stop
 ```
 
-MCP: `qemu_session_start` → `qemu_session_cmd` → `qemu_session_stop`.  
+MCP: `qemu_session_start` → `qemu_session_cmd` / `type` / `key` / **`script`** → `stop`.  
+- `session_start`: **`iso`**, **`disk`**, **`prompt`**
+- `session_cmd`: **`wait: false`** for vi/top (no prompt wait)
+- `session_type`: **Enter by default**; expect timeout still returns **console**
+- `session_script`: batch steps in one call (vi recipes)
+- `guest`/`run`: success JSON **always includes `console`**
+- disk overlap: error **`disk locked by session X`**
+- `console_lines: N` for last N non-blank lines (shell). **In vi: omit / `0` (full)** — `~` lines dominate a non-blank tail
+- Prefer **j/k** over arrow keys in vi  
 Results are **JSON** (`ok`, `console`, `exit_code`).
 
 ### One-shot
 
-
-From the **qemu-connect** repo root:
-
 ```sh
-make plugin cli
-make -C test/munux iso disk    # when kernel or rootfs changed
-
-./build/qemu-connect guest              # boot + show console
-./build/qemu-connect guest help         # type help
-./build/qemu-connect guest ls
-./build/qemu-connect guest cat hello.txt
-
-make guest
-make guest CMD=help
+qemu-connect guest              # boot + show console
+qemu-connect guest help         # type help
+qemu-connect guest ls
+qemu-connect guest cat hello.txt
 ```
 
 - Console text → **stderr**
 - JSON summary → **stdout** (`"ok":true`, `"exit_code":0`)
 - Prompt to wait for: **`munux>`** (not `kfs>`, not KERNEL PANIC)
+- First stderr line shows **which ISO/disk** was used — verify it is KFS
 
 ## Exit codes
 
@@ -62,9 +93,9 @@ make guest CMD=help
 ## Custom scripts
 
 ```sh
-./build/qemu-connect run \
-  --iso test/munux/build/kernel.iso \
-  --disk test/munux/build/disk.img \
+qemu-connect run \
+  --iso /home/mtu/MTU/xAI/trace/test1-2/KFS/build/kernel.iso \
+  --disk /home/mtu/MTU/xAI/trace/test1-2/KFS/build/disk.img \
   --expect 'munux>' \
   --type help \
   --show
@@ -75,5 +106,6 @@ make guest CMD=help
 - Hand-assemble long QEMU CLI for normal verification
 - Use interactive GUI as the agent test
 - Gate on obsolete panic-era strings
+- Use `test/munux` when the real tree is KFS
 
 Full detail: root **`AGENTS.md`**.

@@ -219,11 +219,15 @@ int qc_qmp_send_key(qc_qmp_t *q, const char *qcode)
 }
 
 /* Fill @out with qcode for one character; return 0, or -1 if unsupported.
- * If shift is needed, *need_shift = true and out holds the base key. */
+ * If shift is needed, *need_shift = true and out holds the base (unshifted) key.
+ *
+ * Covers printable ASCII needed for shell + vi (:w :q ! etc.).
+ * US QWERTY layout assumed (QEMU qcode names).
+ */
 static int map_char(int ch, char *out, size_t out_len, bool *need_shift)
 {
     *need_shift = false;
-    if (out_len < 3) {
+    if (out_len < 16) {
         return -1;
     }
     if (ch == '\n' || ch == '\r') {
@@ -242,6 +246,10 @@ static int map_char(int ch, char *out, size_t out_len, bool *need_shift)
         snprintf(out, out_len, "spc");
         return 0;
     }
+    if (ch == 27) {
+        snprintf(out, out_len, "esc");
+        return 0;
+    }
     if (ch >= 'a' && ch <= 'z') {
         out[0] = (char)ch;
         out[1] = '\0';
@@ -258,8 +266,11 @@ static int map_char(int ch, char *out, size_t out_len, bool *need_shift)
         out[1] = '\0';
         return 0;
     }
+
     const char *sym = NULL;
+    bool shift = false;
     switch (ch) {
+    /* unshifted punctuation */
     case '-':
         sym = "minus";
         break;
@@ -293,9 +304,96 @@ static int map_char(int ch, char *out, size_t out_len, bool *need_shift)
     case '`':
         sym = "grave_accent";
         break;
+    /* shifted number row — shell/vi: ! * ( ) etc. */
+    case '!':
+        shift = true;
+        sym = "1";
+        break;
+    case '@':
+        shift = true;
+        sym = "2";
+        break;
+    case '#':
+        shift = true;
+        sym = "3";
+        break;
+    case '$':
+        shift = true;
+        sym = "4";
+        break;
+    case '%':
+        shift = true;
+        sym = "5";
+        break;
+    case '^':
+        shift = true;
+        sym = "6";
+        break;
+    case '&':
+        shift = true;
+        sym = "7";
+        break;
+    case '*':
+        shift = true;
+        sym = "8";
+        break;
+    case '(':
+        shift = true;
+        sym = "9";
+        break;
+    case ')':
+        shift = true;
+        sym = "0";
+        break;
+    /* shifted punctuation — : is critical for vi :w / :q */
+    case '_':
+        shift = true;
+        sym = "minus";
+        break;
+    case '+':
+        shift = true;
+        sym = "equal";
+        break;
+    case '{':
+        shift = true;
+        sym = "bracket_left";
+        break;
+    case '}':
+        shift = true;
+        sym = "bracket_right";
+        break;
+    case '|':
+        shift = true;
+        sym = "backslash";
+        break;
+    case ':':
+        shift = true;
+        sym = "semicolon";
+        break;
+    case '"':
+        shift = true;
+        sym = "apostrophe";
+        break;
+    case '<':
+        shift = true;
+        sym = "comma";
+        break;
+    case '>':
+        shift = true;
+        sym = "dot";
+        break;
+    case '?':
+        shift = true;
+        sym = "slash";
+        break;
+    case '~':
+        shift = true;
+        sym = "grave_accent";
+        break;
     default:
         return -1;
     }
+    *need_shift = shift;
     snprintf(out, out_len, "%s", sym);
     return 0;
 }
@@ -319,7 +417,8 @@ int qc_qmp_type(qc_qmp_t *q, const char *text, int delay_ms)
         char code[32];
         bool shift = false;
         if (map_char(*p, code, sizeof(code), &shift) != 0) {
-            fprintf(stderr, "qmp: cannot map character 0x%02x\n", *p);
+            fprintf(stderr, "qmp: cannot map character 0x%02x ('%c')\n", *p,
+                    (*p >= 32 && *p < 127) ? (char)*p : '?');
             return -1;
         }
         char out[1024];
@@ -337,6 +436,20 @@ int qc_qmp_type(qc_qmp_t *q, const char *text, int delay_ms)
             return -1;
         }
         sleep_ms(delay_ms);
+    }
+    return 0;
+}
+
+int qc_qmp_type_line(qc_qmp_t *q, const char *text, int delay_ms, bool enter)
+{
+    if (qc_qmp_type(q, text, delay_ms) != 0) {
+        return -1;
+    }
+    if (enter) {
+        if (qc_qmp_send_key(q, "ret") != 0) {
+            return -1;
+        }
+        sleep_ms(delay_ms > 0 ? delay_ms : 15);
     }
     return 0;
 }

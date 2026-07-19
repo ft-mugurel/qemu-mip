@@ -21,12 +21,18 @@ Installs into **`~/.local`** by default:
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"
-export QEMU_CONNECT_ROOT=/path/to/this/repo   # where test/munux lives
+export QEMU_CONNECT_ROOT=/path/to/this/repo
 
-# once
-make -C "$QEMU_CONNECT_ROOT/test/munux" iso disk
+# Pin your real kernel (preferred — survives reinstall; do not use test/munux)
+cat > "$QEMU_CONNECT_ROOT/.qemu-connect.local" <<EOF
+QEMU_CONNECT_ROOT=$QEMU_CONNECT_ROOT
+QEMU_CONNECT_MUNUX=/absolute/path/to/your/KFS-or-munux
+QEMU_CONNECT_PLUGIN=$HOME/.local/lib/qemu-connect/libqemu-connect.so
+# QEMU_CONNECT_PROMPT=munux>   # or $ for KFS-style shells
+EOF
 
-qemu-connect guest help
+make -C /absolute/path/to/your/KFS-or-munux iso disk
+qemu-connect guest help   # stderr first line must show your iso path
 ```
 
 ### Custom prefix
@@ -67,35 +73,55 @@ make uninstall
 
 ## Point at your own munux tree (not the bundled test clone)
 
+**Why env alone felt broken:** `make install-mcp` used to regenerate MCP config
+without `QEMU_CONNECT_MUNUX`, so the tool fell back to `$ROOT/test/munux`.
+Also, shell env is not the same as Grok MCP process env.
+
+**Durable pin (recommended):**
+
+```sh
+# project-local (gitignored), read by CLI + MCP wrapper
+cat > .qemu-connect.local <<'EOF'
+QEMU_CONNECT_MUNUX=/absolute/path/to/your/munux-or-KFS
+QEMU_CONNECT_PROMPT=$
+EOF
+# optional global fallback:
+# ~/.config/qemu-connect/env  (same KEY=VALUE format)
+```
+
+Or export for a single shell:
+
 ```sh
 export QEMU_CONNECT_MUNUX=/absolute/path/to/your/munux
-export QEMU_CONNECT_ROOT=/absolute/path/to/qemu-mip
+export QEMU_CONNECT_ROOT=/absolute/path/to/qemu-connect
 export QEMU_CONNECT_PLUGIN=$HOME/.local/lib/qemu-connect/libqemu-connect.so
-
 make -C "$QEMU_CONNECT_MUNUX" iso disk
 qemu-connect guest help
 ```
 
 ### Grok MCP
 
+Prefer the wrapper (loads `.qemu-connect.local` automatically):
+
 ```toml
 [mcp_servers.qemu-connect]
-command = "node"
-args = ["/home/YOU/.local/share/qemu-connect/mcp/dist/index.js"]
+command = "qemu-connect-mcp"
+args = []
 enabled = true
 tool_timeout_sec = 300
 
 [mcp_servers.qemu-connect.env]
-QEMU_CONNECT_ROOT = "/home/YOU/path/to/qemu-mip"
+QEMU_CONNECT_ROOT = "/home/YOU/path/to/qemu-connect"
 QEMU_CONNECT_PLUGIN = "/home/YOU/.local/lib/qemu-connect/libqemu-connect.so"
 QEMU_CONNECT_MUNUX = "/home/YOU/path/to/your/munux"
+QEMU_CONNECT_PROMPT = "$"
 ```
 
 ```sh
 ./scripts/gen-mcp-config.sh \
-  --root /path/to/qemu-mip \
+  --root /path/to/qemu-connect \
   --munux /path/to/your/munux \
   --out ~/.local/share/qemu-connect/mcp.json
 ```
 
-Then: `grok mcp remove qemu-connect` and re-add, or edit config.toml; in Grok `/mcps` press `r`.
+Then: edit `~/.grok/config.toml`; in Grok `/mcps` press `r` to reload.

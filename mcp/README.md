@@ -1,4 +1,4 @@
-# qemu-connect MCP server (v0.3)
+# qemu-connect MCP server (v0.5)
 
 Thin **MCP** wrapper around the **qemu-connect CLI**.
 
@@ -6,15 +6,27 @@ Thin **MCP** wrapper around the **qemu-connect CLI**.
 
 | Tool | Maps to |
 |------|---------|
-| `qemu_connect_info` | Path / binary diagnostics |
-| `qemu_build_guest` | `make plugin cli` and/or `make -C test/munux iso disk` |
-| `qemu_guest` | `qemu-connect guest [cmd…]` |
-| `qemu_run` | `qemu-connect run …` |
-| `qemu_session_start` | Boot once |
-| `qemu_session_cmd` | Shell cmd without reboot |
-| `qemu_session_console` | Read VGA text |
-| `qemu_session_status` | Session + guest status |
+| `qemu_connect_info` | Paths + **vi recipe** + agent notes |
+| `qemu_build_guest` | `make` tool and/or munux (`munux_path` optional) |
+| `qemu_guest` | One-shot boot+cmd — **JSON always has `console`** |
+| `qemu_run` | Custom expect/type — **JSON always has `console`** |
+| `qemu_session_start` | Boot once — `iso`/`disk`/`prompt`; clear **disk locked** errors |
+| `qemu_session_cmd` | Shell cmd; **`wait:false`** for vi/top |
+| `qemu_session_type` | Type text; `enter` default true; console on expect timeout |
+| `qemu_session_key` | Single QMP key (`esc`, `j`, `ret`… prefer j/k over arrows) |
+| `qemu_session_script` | **Batch** of type/key/cmd/expect/console steps |
+| `qemu_session_console` | VGA text; optional `console_lines` |
+| `qemu_session_status` | Includes **`prompt`** + **`last_expect`** |
 | `qemu_session_stop` | Tear down |
+
+### Agent notes (v0.5)
+
+- **Enter by default** on type/cmd — use `enter:false` / `wait:false` for vi.
+- **Char map** includes `:` `!` and shell/vi punctuation.
+- **`console_lines: N`** → last N non-blank lines (shell/help). **Inside vi: omit or `0` (full console)** — the editor fills with `~` lines that count as non-blank, so a tail can drop the real buffer.
+- **Disk overlap** → `"disk locked by session X"` + stop hint (not opaque exit 3).
+- **`qemu_session_script`** for multi-step vi without many MCP round-trips.
+- Call `qemu_connect_info` for the copy-paste **vi recipe**.
 
 ## Setup
 

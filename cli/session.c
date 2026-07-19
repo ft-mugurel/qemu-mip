@@ -9,19 +9,23 @@
  *   qemu-connect session stop
  */
 #define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE
 #include "session.h"
 
 #include "qemu-connect.h"
 #include "qmp.h"
 #include "paths.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -45,7 +49,11 @@ typedef struct {
     char logpath[256];
     char iso[512];
     char disk[512];
+    char prompt[64];      /* shell prompt substring, e.g. "munux>" or "$" */
+    char last_expect[128]; /* last needle waited on (debug stuck sessions) */
 } qc_session_t;
+
+static int save_session(const qc_session_t *s);
 
 static void sleep_ms(int ms)
 {
@@ -97,6 +105,61 @@ static void json_escape_print(FILE *f, const char *s)
     fputc('"', f);
 }
 
+/* Last N non-blank lines; n<=0 keeps full text. Writes into @dst. */
+static void console_tail_nonblank(const char *src, char *dst, size_t dst_len,
+                                  int n)
+{
+    if (!dst || dst_len == 0) {
+        return;
+    }
+    if (!src || !src[0] || n <= 0) {
+        snprintf(dst, dst_len, "%s", src ? src : "");
+        return;
+    }
+    const char *lines[256];
+    int count = 0;
+    const char *p = src;
+    while (*p && count < 256) {
+        lines[count++] = p;
+        const char *nl = strchr(p, '\n');
+        if (!nl) {
+            break;
+        }
+        p = nl + 1;
+    }
+    int kept[256];
+    int k = 0;
+    for (int i = count - 1; i >= 0 && k < n; i--) {
+        const char *s = lines[i];
+        const char *e = (i + 1 < count) ? lines[i + 1] : s + strlen(s);
+        bool blank = true;
+        for (const char *q = s; q < e; q++) {
+            if (*q != ' ' && *q != '\t' && *q != '\r' && *q != '\n') {
+                blank = false;
+                break;
+            }
+        }
+        if (!blank) {
+            kept[k++] = i;
+        }
+    }
+    char *o = dst;
+    size_t left = dst_len;
+    for (int j = k - 1; j >= 0 && left > 1; j--) {
+        int i = kept[j];
+        const char *s = lines[i];
+        const char *e = (i + 1 < count) ? lines[i + 1] : s + strlen(s);
+        size_t len = (size_t)(e - s);
+        if (len >= left) {
+            len = left - 1;
+        }
+        memcpy(o, s, len);
+        o += len;
+        left -= len;
+    }
+    *o = '\0';
+}
+
 static void print_result(bool ok, int exit_code, const char *session_id,
                          const char *op, const char *console,
                          const char *error, long long duration_ms)
@@ -122,6 +185,15 @@ static void print_result(bool ok, int exit_code, const char *session_id,
         json_escape_print(stdout, console);
     }
     printf("}\n");
+}
+
+static void note_last_expect(qc_session_t *s, const char *needle)
+{
+    if (!s || !needle) {
+        return;
+    }
+    snprintf(s->last_expect, sizeof(s->last_expect), "%s", needle);
+    save_session(s);
 }
 
 static const char *runtime_dir(void)
@@ -264,6 +336,56 @@ static int wait_expect(const char *psock, const char *needle, int timeout_ms)
     return -1;
 }
 
+/* Default shell prompt from env / .qemu-connect.local. */
+static const char *default_shell_prompt(void)
+{
+    /* Ensure .qemu-connect.local is loaded (may set QEMU_CONNECT_PROMPT). */
+    (void)qc_default_iso();
+    const char *p = getenv("QEMU_CONNECT_PROMPT");
+    if (p && p[0]) {
+        return p;
+    }
+    return "munux>";
+}
+
+/* Prefer session-stored prompt, then env default. */
+static const char *session_prompt(const qc_session_t *s)
+{
+    if (s && s->prompt[0]) {
+        return s->prompt;
+    }
+    return default_shell_prompt();
+}
+
+/*
+ * Serialize session input (cmd/type/key) across concurrent CLI processes.
+ * Without this, parallel session_cmd races interleave keys on one guest.
+ */
+static int session_lock_acquire(const char *id, int *fd_out)
+{
+    char path[320];
+    snprintf(path, sizeof(path), "%s/qemu-connect-sess-%s.lock", runtime_dir(),
+             id);
+    int fd = open(path, O_CREAT | O_RDWR, 0600);
+    if (fd < 0) {
+        return -1;
+    }
+    if (flock(fd, LOCK_EX) != 0) {
+        close(fd);
+        return -1;
+    }
+    *fd_out = fd;
+    return 0;
+}
+
+static void session_lock_release(int fd)
+{
+    if (fd >= 0) {
+        flock(fd, LOCK_UN);
+        close(fd);
+    }
+}
+
 static int pid_alive(pid_t pid)
 {
     if (pid <= 0) {
@@ -290,10 +412,13 @@ static int save_session(const qc_session_t *s)
             "  \"qmp_sock\": \"%s\",\n"
             "  \"log\": \"%s\",\n"
             "  \"iso\": \"%s\",\n"
-            "  \"disk\": \"%s\"\n"
+            "  \"disk\": \"%s\",\n"
+            "  \"prompt\": \"%s\",\n"
+            "  \"last_expect\": \"%s\"\n"
             "}\n",
             s->id, (int)s->pid, s->plugin_sock, s->qmp_sock, s->logpath, s->iso,
-            s->disk);
+            s->disk, s->prompt[0] ? s->prompt : "munux>",
+            s->last_expect[0] ? s->last_expect : "");
     fclose(f);
     return 0;
 }
@@ -375,6 +500,13 @@ static int load_session(const char *id, qc_session_t *s)
     json_get_string(buf, "log", s->logpath, sizeof(s->logpath));
     json_get_string(buf, "iso", s->iso, sizeof(s->iso));
     json_get_string(buf, "disk", s->disk, sizeof(s->disk));
+    s->prompt[0] = '\0';
+    json_get_string(buf, "prompt", s->prompt, sizeof(s->prompt));
+    if (!s->prompt[0]) {
+        snprintf(s->prompt, sizeof(s->prompt), "%s", default_shell_prompt());
+    }
+    s->last_expect[0] = '\0';
+    json_get_string(buf, "last_expect", s->last_expect, sizeof(s->last_expect));
     return 0;
 }
 
@@ -391,11 +523,22 @@ static void usage(void)
             "Usage: qemu-connect session <subcommand> [options]\n"
             "\n"
             "  start [--id NAME] [--iso PATH] [--disk PATH] [--plugin PATH]\n"
-            "        [--timeout MS] [--no-wait]\n"
-            "      Boot QEMU once; wait for munux> (unless --no-wait).\n"
+            "        [--prompt TEXT] [--timeout MS] [--no-wait]\n"
+            "      Boot QEMU once; wait for shell prompt (default munux> or\n"
+            "      QEMU_CONNECT_PROMPT / --prompt; KFS often uses $).\n"
             "\n"
-            "  cmd <shell words...> [--id NAME] [--timeout MS]\n"
-            "      Type a shell command + Enter; wait for munux> again.\n"
+            "  cmd <shell words...> [--id NAME] [--prompt TEXT] [--timeout MS]\n"
+            "        [--no-wait] [--console-lines N]\n"
+            "      Type shell command + Enter; wait for prompt again.\n"
+            "      --no-wait: do not wait for prompt (vi/top-like apps).\n"
+            "\n"
+            "  type <text> [--id NAME] [--no-enter] [--enter] [--expect TEXT]\n"
+            "        [--timeout MS] [--console-lines N]\n"
+            "      Type text (Enter by default). Use --no-enter for vi insert.\n"
+            "      On expect timeout, console is still returned in JSON.\n"
+            "\n"
+            "  key <qcode> [--id NAME] [--repeat N]\n"
+            "      Send one QMP key (esc, ret, j, k, up, down, ...).\n"
             "\n"
             "  expect <text> [--id NAME] [--timeout MS]\n"
             "  console [--id NAME]     Print console JSON + text field\n"
@@ -403,7 +546,9 @@ static void usage(void)
             "  stop [--id NAME]        QMP quit + cleanup\n"
             "\n"
             "Default id: default\n"
-            "Default munux paths: test/munux/build/kernel.iso + disk.img\n"
+            "Defaults: QEMU_CONNECT_MUNUX or $ROOT/.qemu-connect.local\n"
+            "  (fallback: test/munux/build/kernel.iso + disk.img)\n"
+            "cmd/type/key take a per-session flock (no parallel interleave).\n"
             "All subcommands print one JSON object on stdout.\n");
 }
 
@@ -415,7 +560,9 @@ static int session_start(int argc, char **argv)
     const char *plugin = qc_default_plugin();
     const char *qemu_bin = "qemu-system-x86_64";
     const char *mem = "512M";
+    const char *prompt = default_shell_prompt();
     int timeout_ms = 60000;
+    int console_lines = 0;
     bool wait_prompt = true;
 
     for (int i = 0; i < argc; i++) {
@@ -427,8 +574,12 @@ static int session_start(int argc, char **argv)
             disk = argv[++i];
         } else if (strcmp(argv[i], "--plugin") == 0 && i + 1 < argc) {
             plugin = argv[++i];
+        } else if (strcmp(argv[i], "--prompt") == 0 && i + 1 < argc) {
+            prompt = argv[++i];
         } else if (strcmp(argv[i], "--timeout") == 0 && i + 1 < argc) {
             timeout_ms = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--console-lines") == 0 && i + 1 < argc) {
+            console_lines = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--no-wait") == 0) {
             wait_prompt = false;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -438,6 +589,55 @@ static int session_start(int argc, char **argv)
             print_result(false, QC_SESS_USAGE, id, "start", NULL,
                          "unknown flag", -1);
             return QC_SESS_USAGE;
+        }
+    }
+
+    /* If another live session holds the same disk, fail clearly. */
+    if (disk && disk[0]) {
+        char dir[256];
+        session_dir(dir, sizeof(dir));
+        DIR *d = opendir(dir);
+        if (d) {
+            char want[PATH_MAX];
+            if (!realpath(disk, want)) {
+                snprintf(want, sizeof(want), "%s", disk);
+            }
+            struct dirent *ent;
+            while ((ent = readdir(d)) != NULL) {
+                size_t n = strlen(ent->d_name);
+                if (n < 6 || strcmp(ent->d_name + n - 5, ".json") != 0) {
+                    continue;
+                }
+                char oid[64];
+                snprintf(oid, sizeof(oid), "%s", ent->d_name);
+                oid[n - 5] = '\0'; /* strip .json */
+                if (strcmp(oid, id) == 0) {
+                    continue;
+                }
+                qc_session_t other;
+                if (load_session(oid, &other) != 0) {
+                    continue;
+                }
+                if (!pid_alive(other.pid) || !other.disk[0]) {
+                    continue;
+                }
+                char have[PATH_MAX];
+                if (!realpath(other.disk, have)) {
+                    snprintf(have, sizeof(have), "%s", other.disk);
+                }
+                if (strcmp(have, want) == 0) {
+                    closedir(d);
+                    char err[256];
+                    snprintf(err, sizeof(err),
+                             "disk locked by session %s (pid %d); "
+                             "stop it: qemu-connect session stop --id %s",
+                             other.id, (int)other.pid, other.id);
+                    print_result(false, QC_SESS_FAIL, id, "start", NULL, err,
+                                 -1);
+                    return QC_SESS_FAIL;
+                }
+            }
+            closedir(d);
         }
     }
 
@@ -491,6 +691,7 @@ static int session_start(int argc, char **argv)
     snprintf(s.id, sizeof(s.id), "%s", id);
     snprintf(s.iso, sizeof(s.iso), "%s", iso);
     snprintf(s.disk, sizeof(s.disk), "%s", disk);
+    snprintf(s.prompt, sizeof(s.prompt), "%s", prompt);
     snprintf(s.plugin_sock, sizeof(s.plugin_sock),
              "%s/qemu-connect-sess-%s.sock", runtime_dir(), id);
     snprintf(s.qmp_sock, sizeof(s.qmp_sock), "%s/qemu-connect-sess-%s.qmp",
@@ -564,13 +765,17 @@ static int session_start(int argc, char **argv)
     }
 
     if (wait_prompt) {
-        if (wait_expect(s.plugin_sock, "munux>", timeout_ms) != 0) {
+        snprintf(s.last_expect, sizeof(s.last_expect), "%s", prompt);
+        if (wait_expect(s.plugin_sock, prompt, timeout_ms) != 0) {
             char text[4096] = "";
+            char tail[4096] = "";
             get_console_text(s.plugin_sock, text, sizeof(text));
+            console_tail_nonblank(text, tail, sizeof(tail), console_lines);
             /* still save session so user can inspect/stop */
             save_session(&s);
-            print_result(false, QC_SESS_FAIL, id, "start", text,
-                         "timeout waiting for munux>", now_ms() - t0);
+            print_result(false, QC_SESS_FAIL, id, "start",
+                         console_lines > 0 ? tail : text,
+                         "timeout waiting for shell prompt", now_ms() - t0);
             return QC_SESS_FAIL;
         }
     }
@@ -583,17 +788,26 @@ static int session_start(int argc, char **argv)
 
     char text[QEMU_CONNECT_VGA_COLS * QEMU_CONNECT_VGA_ROWS +
               QEMU_CONNECT_VGA_ROWS + 8];
+    char tail[QEMU_CONNECT_VGA_COLS * QEMU_CONNECT_VGA_ROWS +
+              QEMU_CONNECT_VGA_ROWS + 8];
     text[0] = '\0';
     get_console_text(s.plugin_sock, text, sizeof(text));
+    console_tail_nonblank(text, tail, sizeof(tail), console_lines);
 
     printf("{\"ok\":true,\"exit_code\":0,\"op\":\"start\",\"session_id\":");
     json_escape_print(stdout, id);
-    printf(",\"pid\":%d,\"plugin_sock\":", (int)s.pid);
+    printf(",\"pid\":%d,\"iso\":", (int)s.pid);
+    json_escape_print(stdout, s.iso);
+    printf(",\"disk\":");
+    json_escape_print(stdout, s.disk);
+    printf(",\"prompt\":");
+    json_escape_print(stdout, s.prompt);
+    printf(",\"plugin_sock\":");
     json_escape_print(stdout, s.plugin_sock);
     printf(",\"qmp_sock\":");
     json_escape_print(stdout, s.qmp_sock);
     printf(",\"duration_ms\":%lld,\"console\":", now_ms() - t0);
-    json_escape_print(stdout, text);
+    json_escape_print(stdout, console_lines > 0 ? tail : text);
     printf("}\n");
     return QC_SESS_OK;
 }
@@ -616,7 +830,10 @@ static int require_session(const char *id, qc_session_t *s, const char *op)
 static int session_cmd(int argc, char **argv)
 {
     const char *id = "default";
+    const char *prompt_override = NULL;
     int timeout_ms = 30000;
+    int console_lines = 0;
+    bool wait_for_prompt = true;
     /* collect shell words until flags */
     char line[512];
     line[0] = '\0';
@@ -625,8 +842,14 @@ static int session_cmd(int argc, char **argv)
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "--id") == 0 && i + 1 < argc) {
             id = argv[++i];
+        } else if (strcmp(argv[i], "--prompt") == 0 && i + 1 < argc) {
+            prompt_override = argv[++i];
         } else if (strcmp(argv[i], "--timeout") == 0 && i + 1 < argc) {
             timeout_ms = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--console-lines") == 0 && i + 1 < argc) {
+            console_lines = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--no-wait") == 0) {
+            wait_for_prompt = false;
         } else if (argv[i][0] == '-') {
             print_result(false, QC_SESS_USAGE, id, "cmd", NULL, "unknown flag",
                          -1);
@@ -646,20 +869,34 @@ static int session_cmd(int argc, char **argv)
     }
 
     long long t0 = now_ms();
+    int lockfd = -1;
+    if (session_lock_acquire(id, &lockfd) != 0) {
+        print_result(false, QC_SESS_FAIL, id, "cmd", NULL,
+                     "session lock failed", -1);
+        return QC_SESS_FAIL;
+    }
+
     qc_session_t s;
     if (require_session(id, &s, "cmd") != 0) {
+        session_lock_release(lockfd);
         return QC_SESS_GONE;
     }
 
+    const char *prompt =
+        prompt_override && prompt_override[0] ? prompt_override
+                                              : session_prompt(&s);
+
     qc_qmp_t *q = qc_qmp_connect(s.qmp_sock);
     if (!q) {
-        print_result(false, QC_SESS_CONNECT, id, "cmd", NULL, "qmp connect failed",
-                     now_ms() - t0);
+        session_lock_release(lockfd);
+        print_result(false, QC_SESS_CONNECT, id, "cmd", NULL,
+                     "qmp connect failed", now_ms() - t0);
         return QC_SESS_CONNECT;
     }
 
-    if (qc_qmp_type(q, line, 15) != 0 || qc_qmp_send_key(q, "ret") != 0) {
+    if (qc_qmp_type_line(q, line, 15, true) != 0) {
         qc_qmp_close(q);
+        session_lock_release(lockfd);
         print_result(false, QC_SESS_FAIL, id, "cmd", NULL, "type failed",
                      now_ms() - t0);
         return QC_SESS_FAIL;
@@ -667,24 +904,233 @@ static int session_cmd(int argc, char **argv)
     qc_qmp_close(q);
 
     sleep_ms(150);
-    if (wait_expect(s.plugin_sock, "munux>", timeout_ms) != 0) {
-        char text[4096] = "";
-        get_console_text(s.plugin_sock, text, sizeof(text));
-        print_result(false, QC_SESS_FAIL, id, "cmd", text,
-                     "timeout waiting for prompt after cmd", now_ms() - t0);
-        return QC_SESS_FAIL;
+    if (wait_for_prompt) {
+        note_last_expect(&s, prompt);
+        if (wait_expect(s.plugin_sock, prompt, timeout_ms) != 0) {
+            char text[4096] = "";
+            char tail[4096] = "";
+            get_console_text(s.plugin_sock, text, sizeof(text));
+            console_tail_nonblank(text, tail, sizeof(tail), console_lines);
+            session_lock_release(lockfd);
+            print_result(false, QC_SESS_FAIL, id, "cmd",
+                         console_lines > 0 ? tail : text,
+                         "timeout waiting for prompt after cmd", now_ms() - t0);
+            return QC_SESS_FAIL;
+        }
     }
 
     char text[QEMU_CONNECT_VGA_COLS * QEMU_CONNECT_VGA_ROWS +
               QEMU_CONNECT_VGA_ROWS + 8];
+    char tail[QEMU_CONNECT_VGA_COLS * QEMU_CONNECT_VGA_ROWS +
+              QEMU_CONNECT_VGA_ROWS + 8];
     text[0] = '\0';
     get_console_text(s.plugin_sock, text, sizeof(text));
+    console_tail_nonblank(text, tail, sizeof(tail), console_lines);
+    session_lock_release(lockfd);
 
     printf("{\"ok\":true,\"exit_code\":0,\"op\":\"cmd\",\"session_id\":");
     json_escape_print(stdout, id);
     printf(",\"cmd\":");
     json_escape_print(stdout, line);
+    printf(",\"prompt\":");
+    json_escape_print(stdout, prompt);
+    printf(",\"wait\":%s,\"duration_ms\":%lld,\"console\":",
+           wait_for_prompt ? "true" : "false", now_ms() - t0);
+    json_escape_print(stdout, console_lines > 0 ? tail : text);
+    printf("}\n");
+    return QC_SESS_OK;
+}
+
+static int session_type(int argc, char **argv)
+{
+    const char *id = "default";
+    const char *text_in = NULL;
+    const char *expect = NULL;
+    int timeout_ms = 30000;
+    int console_lines = 0;
+    bool enter = true;
+    bool enter_set = false;
+
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--id") == 0 && i + 1 < argc) {
+            id = argv[++i];
+        } else if (strcmp(argv[i], "--timeout") == 0 && i + 1 < argc) {
+            timeout_ms = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--expect") == 0 && i + 1 < argc) {
+            expect = argv[++i];
+        } else if (strcmp(argv[i], "--console-lines") == 0 && i + 1 < argc) {
+            console_lines = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--no-enter") == 0) {
+            enter = false;
+            enter_set = true;
+        } else if (strcmp(argv[i], "--enter") == 0) {
+            enter = true;
+            enter_set = true;
+        } else if (argv[i][0] == '-') {
+            print_result(false, QC_SESS_USAGE, id, "type", NULL, "unknown flag",
+                         -1);
+            return QC_SESS_USAGE;
+        } else if (!text_in) {
+            text_in = argv[i];
+        }
+    }
+    (void)enter_set;
+    if (!text_in) {
+        print_result(false, QC_SESS_USAGE, id, "type", NULL, "missing text",
+                     -1);
+        return QC_SESS_USAGE;
+    }
+
+    long long t0 = now_ms();
+    int lockfd = -1;
+    if (session_lock_acquire(id, &lockfd) != 0) {
+        print_result(false, QC_SESS_FAIL, id, "type", NULL,
+                     "session lock failed", -1);
+        return QC_SESS_FAIL;
+    }
+
+    qc_session_t s;
+    if (require_session(id, &s, "type") != 0) {
+        session_lock_release(lockfd);
+        return QC_SESS_GONE;
+    }
+
+    qc_qmp_t *q = qc_qmp_connect(s.qmp_sock);
+    if (!q) {
+        session_lock_release(lockfd);
+        print_result(false, QC_SESS_CONNECT, id, "type", NULL,
+                     "qmp connect failed", now_ms() - t0);
+        return QC_SESS_CONNECT;
+    }
+
+    if (qc_qmp_type_line(q, text_in, 15, enter) != 0) {
+        qc_qmp_close(q);
+        session_lock_release(lockfd);
+        print_result(false, QC_SESS_FAIL, id, "type", NULL, "type failed",
+                     now_ms() - t0);
+        return QC_SESS_FAIL;
+    }
+    qc_qmp_close(q);
+
+    bool expect_ok = true;
+    if (expect && expect[0]) {
+        sleep_ms(100);
+        note_last_expect(&s, expect);
+        if (wait_expect(s.plugin_sock, expect, timeout_ms) != 0) {
+            expect_ok = false;
+        }
+    } else {
+        sleep_ms(80);
+    }
+
+    char text[QEMU_CONNECT_VGA_COLS * QEMU_CONNECT_VGA_ROWS +
+              QEMU_CONNECT_VGA_ROWS + 8];
+    char tail[QEMU_CONNECT_VGA_COLS * QEMU_CONNECT_VGA_ROWS +
+              QEMU_CONNECT_VGA_ROWS + 8];
+    text[0] = '\0';
+    get_console_text(s.plugin_sock, text, sizeof(text));
+    console_tail_nonblank(text, tail, sizeof(tail), console_lines);
+    session_lock_release(lockfd);
+
+    /* Always return console — even when expect times out (vi :wq etc.). */
+    printf("{\"ok\":%s,\"exit_code\":%d,\"op\":\"type\",\"session_id\":",
+           expect_ok ? "true" : "false", expect_ok ? 0 : QC_SESS_FAIL);
+    json_escape_print(stdout, id);
+    printf(",\"text\":");
+    json_escape_print(stdout, text_in);
+    printf(",\"enter\":%s", enter ? "true" : "false");
+    if (expect && expect[0]) {
+        printf(",\"expect\":");
+        json_escape_print(stdout, expect);
+        printf(",\"expect_ok\":%s", expect_ok ? "true" : "false");
+        if (!expect_ok) {
+            printf(",\"error\":\"timeout waiting for expect\"");
+        }
+    }
     printf(",\"duration_ms\":%lld,\"console\":", now_ms() - t0);
+    json_escape_print(stdout, console_lines > 0 ? tail : text);
+    printf("}\n");
+    return expect_ok ? QC_SESS_OK : QC_SESS_FAIL;
+}
+
+static int session_key(int argc, char **argv)
+{
+    const char *id = "default";
+    const char *qcode = NULL;
+    int repeat = 1;
+
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--id") == 0 && i + 1 < argc) {
+            id = argv[++i];
+        } else if (strcmp(argv[i], "--repeat") == 0 && i + 1 < argc) {
+            repeat = atoi(argv[++i]);
+            if (repeat < 1) {
+                repeat = 1;
+            }
+            if (repeat > 100) {
+                repeat = 100;
+            }
+        } else if (argv[i][0] == '-') {
+            print_result(false, QC_SESS_USAGE, id, "key", NULL, "unknown flag",
+                         -1);
+            return QC_SESS_USAGE;
+        } else if (!qcode) {
+            qcode = argv[i];
+        }
+    }
+    if (!qcode || !qcode[0]) {
+        print_result(false, QC_SESS_USAGE, id, "key", NULL, "missing qcode",
+                     -1);
+        return QC_SESS_USAGE;
+    }
+
+    long long t0 = now_ms();
+    int lockfd = -1;
+    if (session_lock_acquire(id, &lockfd) != 0) {
+        print_result(false, QC_SESS_FAIL, id, "key", NULL,
+                     "session lock failed", -1);
+        return QC_SESS_FAIL;
+    }
+
+    qc_session_t s;
+    if (require_session(id, &s, "key") != 0) {
+        session_lock_release(lockfd);
+        return QC_SESS_GONE;
+    }
+
+    qc_qmp_t *q = qc_qmp_connect(s.qmp_sock);
+    if (!q) {
+        session_lock_release(lockfd);
+        print_result(false, QC_SESS_CONNECT, id, "key", NULL,
+                     "qmp connect failed", now_ms() - t0);
+        return QC_SESS_CONNECT;
+    }
+
+    for (int n = 0; n < repeat; n++) {
+        if (qc_qmp_send_key(q, qcode) != 0) {
+            qc_qmp_close(q);
+            session_lock_release(lockfd);
+            print_result(false, QC_SESS_FAIL, id, "key", NULL, "send-key failed",
+                         now_ms() - t0);
+            return QC_SESS_FAIL;
+        }
+        sleep_ms(20);
+    }
+    qc_qmp_close(q);
+    sleep_ms(50);
+
+    char text[QEMU_CONNECT_VGA_COLS * QEMU_CONNECT_VGA_ROWS +
+              QEMU_CONNECT_VGA_ROWS + 8];
+    text[0] = '\0';
+    get_console_text(s.plugin_sock, text, sizeof(text));
+    session_lock_release(lockfd);
+
+    printf("{\"ok\":true,\"exit_code\":0,\"op\":\"key\",\"session_id\":");
+    json_escape_print(stdout, id);
+    printf(",\"qcode\":");
+    json_escape_print(stdout, qcode);
+    printf(",\"repeat\":%d,\"duration_ms\":%lld,\"console\":", repeat,
+           now_ms() - t0);
     json_escape_print(stdout, text);
     printf("}\n");
     return QC_SESS_OK;
@@ -729,9 +1175,12 @@ static int session_expect(int argc, char **argv)
 static int session_console(int argc, char **argv)
 {
     const char *id = "default";
+    int console_lines = 0;
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "--id") == 0 && i + 1 < argc) {
             id = argv[++i];
+        } else if (strcmp(argv[i], "--console-lines") == 0 && i + 1 < argc) {
+            console_lines = atoi(argv[++i]);
         }
     }
     qc_session_t s;
@@ -740,13 +1189,17 @@ static int session_console(int argc, char **argv)
     }
     char text[QEMU_CONNECT_VGA_COLS * QEMU_CONNECT_VGA_ROWS +
               QEMU_CONNECT_VGA_ROWS + 8];
+    char tail[QEMU_CONNECT_VGA_COLS * QEMU_CONNECT_VGA_ROWS +
+              QEMU_CONNECT_VGA_ROWS + 8];
     text[0] = '\0';
     if (get_console_text(s.plugin_sock, text, sizeof(text)) != 0) {
         print_result(false, QC_SESS_CONNECT, id, "console", NULL,
                      "get_console failed", -1);
         return QC_SESS_CONNECT;
     }
-    print_result(true, 0, id, "console", text, NULL, -1);
+    console_tail_nonblank(text, tail, sizeof(tail), console_lines);
+    print_result(true, 0, id, "console", console_lines > 0 ? tail : text, NULL,
+                 -1);
     return QC_SESS_OK;
 }
 
@@ -775,7 +1228,15 @@ static int session_status(int argc, char **argv)
     }
     printf("{\"ok\":true,\"exit_code\":0,\"op\":\"status\",\"session_id\":");
     json_escape_print(stdout, id);
-    printf(",\"pid\":%d,\"alive\":true,\"plugin_sock\":", (int)s.pid);
+    printf(",\"pid\":%d,\"alive\":true,\"prompt\":", (int)s.pid);
+    json_escape_print(stdout, session_prompt(&s));
+    printf(",\"last_expect\":");
+    json_escape_print(stdout, s.last_expect);
+    printf(",\"iso\":");
+    json_escape_print(stdout, s.iso);
+    printf(",\"disk\":");
+    json_escape_print(stdout, s.disk);
+    printf(",\"plugin_sock\":");
     json_escape_print(stdout, s.plugin_sock);
     printf(",\"qmp_sock\":");
     json_escape_print(stdout, s.qmp_sock);
@@ -836,6 +1297,12 @@ int qc_cmd_session(int argc, char **argv)
     }
     if (strcmp(sub, "cmd") == 0) {
         return session_cmd(argc - 1, argv + 1);
+    }
+    if (strcmp(sub, "type") == 0) {
+        return session_type(argc - 1, argv + 1);
+    }
+    if (strcmp(sub, "key") == 0) {
+        return session_key(argc - 1, argv + 1);
     }
     if (strcmp(sub, "expect") == 0) {
         return session_expect(argc - 1, argv + 1);

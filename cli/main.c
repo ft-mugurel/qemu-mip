@@ -36,10 +36,11 @@ static int usage(const char *argv0)
             "  expect <substring> [--timeout MS]\n"
             "  raw <json-line>   (also: mem_read via raw)\n"
             "QMP commands (use --qmp PATH):\n"
-            "  qmp-ping | quit | key <qcode> | type <string>\n"
+            "  qmp-ping | quit | key <qcode>\n"
+            "  type <string> [--no-enter]   # Enter (ret) by default; --no-enter for partial\n"
             "Orchestration:\n"
             "  guest [shell command...]            # one-shot munux boot+cmd\n"
-            "  session start|cmd|console|stop      # multi-cmd without reboot\n"
+            "  session start|cmd|key|type|console|stop  # multi-cmd without reboot\n"
             "  run --iso PATH [--disk] [--expect/--type] [--show]\n"
             "\n"
             "Plugin default socket: %s\n",
@@ -374,13 +375,28 @@ int main(int argc, char **argv)
                 fprintf(stderr, "key failed\n");
             }
         } else if (strcmp(cmd, "type") == 0) {
+            /* type TEXT [--no-enter]
+             * Default: type text then press Enter (ret). Without Enter agents
+             * leave half-typed lines and retype → looks like double-echo.
+             */
             if (i + 1 >= argc) {
                 qc_qmp_close(q);
                 return usage(argv[0]);
             }
-            rc = qc_qmp_type(q, argv[i + 1], 20);
+            const char *text = argv[i + 1];
+            bool enter = true;
+            for (int j = i + 2; j < argc; j++) {
+                if (strcmp(argv[j], "--no-enter") == 0) {
+                    enter = false;
+                } else if (strcmp(argv[j], "--enter") == 0) {
+                    enter = true;
+                }
+            }
+            rc = qc_qmp_type_line(q, text, 20, enter);
             if (rc != 0) {
                 fprintf(stderr, "type failed\n");
+            } else {
+                fprintf(stderr, "type: ok%s\n", enter ? " (+Enter)" : " (no Enter)");
             }
         }
         qc_qmp_close(q);

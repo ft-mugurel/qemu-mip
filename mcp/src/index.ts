@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * qemu-connect MCP server (stdio) v0.3
- * Structured JSON tool results + session tools for multi-cmd without reboot.
+ * qemu-connect MCP server (stdio) v0.5
+ * Session tools + guest console always + disk-lock errors + vi script batch.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -20,10 +20,39 @@ import { runMake, runQemuConnect, type CliResult } from "./run-cli.js";
 
 const server = new McpServer({
   name: "qemu-connect",
-  version: "0.3.0",
+  version: "0.5.0",
 });
 
-/** Prefer parsing CLI JSON line from stdout; fall back to raw text. */
+/** Serialize all session mutations in this MCP process (extra safety on top of CLI flock). */
+const sessionChains = new Map<string, Promise<unknown>>();
+
+async function withSessionLock<T>(
+  sessionId: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  const id = sessionId || "default";
+  const prev = sessionChains.get(id) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const chained = prev.then(() => gate);
+  sessionChains.set(
+    id,
+    chained.catch(() => {
+      /* keep chain alive */
+    })
+  );
+  await prev.catch(() => {
+    /* ignore prior errors */
+  });
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
 function parseCliJson(r: CliResult): Record<string, unknown> {
   const lines = r.stdout
     .split("\n")
@@ -71,11 +100,54 @@ function toolFromCli(r: CliResult) {
   return toolJson(payload, !ok || r.exitCode !== 0);
 }
 
+function absPath(p: string | undefined, root: string): string | undefined {
+  if (!p) return undefined;
+  return path.isAbsolute(p) ? p : path.join(root, p);
+}
+
+const VI_RECIPE = [
+  "Mini vi recipe (KFS prompt is usually $):",
+  "1) qemu_session_start({ iso, disk, prompt: '$' })",
+  "2) qemu_session_cmd({ cmd: 'vi hello.txt', wait: false })  # do not wait for $",
+  "3) qemu_session_key({ qcode: 'i' })                       # insert mode",
+  "4) qemu_session_type({ text: 'hello', enter: false })",
+  "5) qemu_session_key({ qcode: 'esc' })",
+  "6) qemu_session_type({ text: ':wq', enter: true, expect: '$' })",
+  "7) qemu_session_stop({})",
+  "",
+  "Or one shot: qemu_session_script({ steps: [",
+  "  { op:'cmd', text:'vi hello.txt', wait:false },",
+  "  { op:'key', qcode:'i' },",
+  "  { op:'type', text:'hello', enter:false },",
+  "  { op:'key', qcode:'esc' },",
+  "  { op:'type', text:':wq', enter:true, expect:'$' },",
+  "] })",
+  "",
+  "Prefer j/k over arrow keys in vi (arrows may be private-bytes on munux).",
+  "Console is glyphs only (no inverse cursor). type/cmd send Enter by default.",
+  "Inside vi: omit console_lines (or 0 = full). Tail of non-blank lines is mostly '~'.",
+].join("\n");
+
+const TOOL_LIST = [
+  "qemu_connect_info",
+  "qemu_build_guest",
+  "qemu_guest",
+  "qemu_run",
+  "qemu_session_start",
+  "qemu_session_cmd",
+  "qemu_session_type",
+  "qemu_session_key",
+  "qemu_session_script",
+  "qemu_session_console",
+  "qemu_session_status",
+  "qemu_session_stop",
+] as const;
+
 server.registerTool(
   "qemu_connect_info",
   {
     description:
-      "Report qemu-connect paths and artifact presence. Structured JSON.",
+      "Report qemu-connect paths and artifact presence. Includes mini vi recipe. Structured JSON.",
     inputSchema: {},
   },
   async () => {
@@ -100,18 +172,30 @@ server.registerTool(
           QEMU_CONNECT_ISO: process.env.QEMU_CONNECT_ISO ?? null,
           QEMU_CONNECT_DISK: process.env.QEMU_CONNECT_DISK ?? null,
           QEMU_CONNECT_PLUGIN: process.env.QEMU_CONNECT_PLUGIN ?? null,
+          QEMU_CONNECT_PROMPT: process.env.QEMU_CONNECT_PROMPT ?? null,
         },
-        tools: [
-          "qemu_connect_info",
-          "qemu_build_guest",
-          "qemu_guest",
-          "qemu_run",
-          "qemu_session_start",
-          "qemu_session_cmd",
-          "qemu_session_console",
-          "qemu_session_status",
-          "qemu_session_stop",
-        ],
+        notes: {
+          type_sends_enter:
+            "session_type / CLI type send Enter by default; use enter:false or --no-enter for partial (vi).",
+          prompt:
+            "session_start prompt defaults from QEMU_CONNECT_PROMPT. KFS uses '$'.",
+          char_map:
+            "type maps : ! and common shell/vi punctuation (US QWERTY).",
+          console:
+            "Console is glyphs only; inverse-video cursor is not visible. guest/run always include console in JSON.",
+          console_lines:
+            "Pass console_lines=N for last N non-blank lines (shell/help). " +
+            "For vi screens omit or use 0 (full console): vi fills the screen with '~' " +
+            "lines which count as non-blank, so tail can drop the real buffer.",
+          disk_lock:
+            "If two boots share disk.img, error is 'disk locked by session X' with stop hint.",
+          arrows:
+            "Prefer j/k for vi motion; arrow qcodes may map to private bytes on munux/KFS.",
+          wait_false:
+            "session_cmd wait:false for vi/top (no prompt wait). session_type already no-waits by default.",
+        },
+        vi_recipe: VI_RECIPE,
+        tools: [...TOOL_LIST],
       });
     } catch (e) {
       return toolJson(
@@ -129,36 +213,47 @@ server.registerTool(
   "qemu_build_guest",
   {
     description:
-      "Build munux ISO/disk and/or qemu-connect binaries via make. Structured JSON.",
+      "Build munux/KFS ISO+disk and/or qemu-connect binaries via make. " +
+      "Uses QEMU_CONNECT_MUNUX (or munux_path) — not only test/munux.",
     inputSchema: {
       what: z
         .enum(["all", "munux", "tool"])
         .optional()
         .describe("all (default) | munux | tool"),
+      munux_path: z
+        .string()
+        .optional()
+        .describe(
+          "Absolute or repo-relative path to munux/KFS tree (overrides QEMU_CONNECT_MUNUX)"
+        ),
     },
   },
-  async ({ what }) => {
+  async ({ what, munux_path }) => {
     const mode = what ?? "all";
     const root = getRepoRoot();
     const steps: Record<string, unknown>[] = [];
 
     if (mode === "all" || mode === "tool") {
       const r = await runMake(["plugin", "cli"], { timeoutMs: 120_000 });
-      steps.push({ step: "make plugin cli", ...parseCliJson(r), raw_exit: r.exitCode });
+      steps.push({
+        step: "make plugin cli",
+        ...parseCliJson(r),
+        raw_exit: r.exitCode,
+      });
       if (r.exitCode !== 0) {
         return toolJson({ ok: false, steps }, true);
       }
     }
     if (mode === "all" || mode === "munux") {
-      const munux = getMunuxRoot();
+      let munux = absPath(munux_path, root) ?? getMunuxRoot() ?? undefined;
       if (!munux || !fs.existsSync(munux)) {
         return toolJson(
           {
             ok: false,
             error: "munux tree not found",
             hint:
-              "Set MCP env QEMU_CONNECT_MUNUX=/absolute/path/to/your/munux " +
-              "(or clone into $QEMU_CONNECT_ROOT/test/munux)",
+              "Pass munux_path, or set MCP env QEMU_CONNECT_MUNUX=/abs/path/to/KFS " +
+              "(or pin $QEMU_CONNECT_ROOT/.qemu-connect.local)",
             steps,
           },
           true
@@ -169,7 +264,8 @@ server.registerTool(
         timeoutMs: 600_000,
       });
       steps.push({
-        step: "make -C test/munux iso disk",
+        step: `make -C ${munux} iso disk`,
+        munux_path: munux,
         ...parseCliJson(r),
         raw_exit: r.exitCode,
       });
@@ -185,22 +281,44 @@ server.registerTool(
   "qemu_guest",
   {
     description:
-      "One-shot: boot munux, optional shell cmd, teardown. Prefer qemu_session_* for multiple commands. Returns structured JSON including console.",
+      "One-shot: boot guest, optional shell cmd + Enter, teardown. " +
+      "JSON always includes console (even on success). Prefer qemu_session_* for multi-cmd/vi.",
     inputSchema: {
       cmd: z.string().optional().describe('e.g. "help" or "ls bin"'),
+      iso: z.string().optional(),
+      disk: z.string().optional(),
+      prompt: z
+        .string()
+        .optional()
+        .describe('Shell prompt to wait for, e.g. "$" or "munux>"'),
+      console_lines: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          "Last N non-blank lines (0/omit=full). Use full console for vi (~ lines are non-blank)."
+        ),
       timeout_ms: z.number().int().positive().optional(),
     },
   },
-  async ({ cmd, timeout_ms }) => {
+  async ({ cmd, iso, disk, prompt, console_lines, timeout_ms }) => {
+    const root = getRepoRoot();
     const args = [
       "guest",
       "--iso",
-      getMunuxIso(),
+      absPath(iso, root) ?? getMunuxIso(),
       "--disk",
-      getMunuxDisk(),
+      absPath(disk, root) ?? getMunuxDisk(),
       "--plugin",
-      getPluginPath(getRepoRoot()),
+      getPluginPath(root),
     ];
+    if (prompt) {
+      args.push("--prompt", prompt);
+    }
+    if (console_lines && console_lines > 0) {
+      args.push("--console-lines", String(console_lines));
+    }
     if (cmd?.trim()) {
       args.push(...cmd.trim().split(/\s+/));
     }
@@ -220,34 +338,37 @@ server.registerTool(
   "qemu_run",
   {
     description:
-      "One-shot custom expect/type script (boots then quits). Returns structured JSON.",
+      "One-shot custom expect/type script (boots then quits). " +
+      "Each type step sends Enter. JSON always includes console.",
     inputSchema: {
       iso: z.string().optional(),
       disk: z.string().optional(),
       steps: z.array(stepSchema).min(1),
       show: z.boolean().optional(),
+      console_lines: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("Last N non-blank lines; omit/0 for full (prefer full inside vi)"),
       timeout_ms: z.number().int().positive().optional(),
     },
   },
-  async ({ iso, disk, steps, show, timeout_ms }) => {
+  async ({ iso, disk, steps, show, console_lines, timeout_ms }) => {
     const root = getRepoRoot();
     const defaultIso = getMunuxIso();
     const defaultDisk = getMunuxDisk();
-    const isoPath = iso
-      ? path.isAbsolute(iso)
-        ? iso
-        : path.join(root, iso)
-      : defaultIso;
+    const isoPath = absPath(iso, root) ?? defaultIso;
     let diskPath: string | undefined;
     if (disk) {
-      diskPath = path.isAbsolute(disk) ? disk : path.join(root, disk);
+      diskPath = absPath(disk, root);
     } else if (fs.existsSync(defaultDisk)) {
       diskPath = defaultDisk;
     }
     const args: string[] = [
       "run",
       "--iso",
-      isoPath,
+      isoPath!,
       "--plugin",
       getPluginPath(root),
     ];
@@ -256,6 +377,9 @@ server.registerTool(
     }
     if (timeout_ms) {
       args.push("--timeout", String(timeout_ms));
+    }
+    if (console_lines && console_lines > 0) {
+      args.push("--console-lines", String(console_lines));
     }
     for (const s of steps) {
       args.push(s.op === "expect" ? "--expect" : "--type", s.text);
@@ -271,46 +395,77 @@ server.registerTool(
   }
 );
 
-/* ---- Persistent session tools (P0) ---- */
+/* ---- Persistent session tools ---- */
 
 server.registerTool(
   "qemu_session_start",
   {
     description:
-      "Start a long-lived munux QEMU session (boot once). Use qemu_session_cmd for further commands. Default session_id=default.",
+      "Start a long-lived QEMU session (boot once). Pass iso/disk/prompt for your " +
+      "dev kernel (e.g. KFS prompt \"$\"). Fails clearly if disk is locked by another session. " +
+      "Defaults from QEMU_CONNECT_MUNUX / .qemu-connect.local.",
     inputSchema: {
       session_id: z.string().optional().describe("Session name (default)"),
+      iso: z.string().optional().describe("Path to kernel.iso"),
+      disk: z.string().optional().describe("Path to disk.img"),
+      prompt: z
+        .string()
+        .optional()
+        .describe('Shell prompt substring: "$" for KFS, "munux>" for classic'),
+      console_lines: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("Last N non-blank lines; omit/0 full (use full for vi)"),
       timeout_ms: z.number().int().positive().optional(),
       no_wait: z
         .boolean()
         .optional()
-        .describe("If true, do not wait for munux> prompt"),
+        .describe("If true, do not wait for shell prompt"),
     },
   },
-  async ({ session_id, timeout_ms, no_wait }) => {
-    const args = [
-      "session",
-      "start",
-      "--iso",
-      getMunuxIso(),
-      "--disk",
-      getMunuxDisk(),
-      "--plugin",
-      getPluginPath(getRepoRoot()),
-    ];
-    if (session_id) {
-      args.push("--id", session_id);
-    }
-    if (timeout_ms) {
-      args.push("--timeout", String(timeout_ms));
-    }
-    if (no_wait) {
-      args.push("--no-wait");
-    }
-    const r = await runQemuConnect(args, {
-      timeoutMs: (timeout_ms ?? 60_000) + 30_000,
+  async ({
+    session_id,
+    iso,
+    disk,
+    prompt,
+    console_lines,
+    timeout_ms,
+    no_wait,
+  }) => {
+    const sid = session_id ?? "default";
+    return withSessionLock(sid, async () => {
+      const root = getRepoRoot();
+      const args = [
+        "session",
+        "start",
+        "--iso",
+        absPath(iso, root) ?? getMunuxIso(),
+        "--disk",
+        absPath(disk, root) ?? getMunuxDisk(),
+        "--plugin",
+        getPluginPath(root),
+        "--id",
+        sid,
+      ];
+      if (prompt) {
+        args.push("--prompt", prompt);
+      }
+      if (console_lines && console_lines > 0) {
+        args.push("--console-lines", String(console_lines));
+      }
+      if (timeout_ms) {
+        args.push("--timeout", String(timeout_ms));
+      }
+      if (no_wait) {
+        args.push("--no-wait");
+      }
+      const r = await runQemuConnect(args, {
+        timeoutMs: (timeout_ms ?? 60_000) + 30_000,
+      });
+      return toolFromCli(r);
     });
-    return toolFromCli(r);
   }
 );
 
@@ -318,41 +473,320 @@ server.registerTool(
   "qemu_session_cmd",
   {
     description:
-      "Run a shell command in an existing session (no reboot). Requires qemu_session_start first.",
+      "Run a shell command + Enter in an existing session. " +
+      "wait defaults true (wait for prompt). Set wait:false for vi/top. " +
+      "Serialized per session. For vi keystrokes prefer session_key/type/script.",
     inputSchema: {
-      cmd: z.string().describe('Shell line, e.g. "help" or "ls bin"'),
+      cmd: z.string().describe('Shell line, e.g. "help" or "vi file.txt"'),
+      session_id: z.string().optional(),
+      prompt: z
+        .string()
+        .optional()
+        .describe("Override wait prompt for this cmd (default: session prompt)"),
+      wait: z
+        .boolean()
+        .optional()
+        .describe(
+          "Wait for shell prompt after cmd (default true). false for vi/top."
+        ),
+      console_lines: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("Last N non-blank lines; omit/0 full (use full after launching vi)"),
+      timeout_ms: z.number().int().positive().optional(),
+    },
+  },
+  async ({ cmd, session_id, prompt, wait, console_lines, timeout_ms }) => {
+    const sid = session_id ?? "default";
+    return withSessionLock(sid, async () => {
+      const args = ["session", "cmd", "--id", sid];
+      if (prompt) {
+        args.push("--prompt", prompt);
+      }
+      if (wait === false) {
+        args.push("--no-wait");
+      }
+      if (console_lines && console_lines > 0) {
+        args.push("--console-lines", String(console_lines));
+      }
+      if (timeout_ms) {
+        args.push("--timeout", String(timeout_ms));
+      }
+      args.push(...cmd.trim().split(/\s+/));
+      const r = await runQemuConnect(args, {
+        timeoutMs: (timeout_ms ?? 30_000) + 15_000,
+      });
+      return toolFromCli(r);
+    });
+  }
+);
+
+server.registerTool(
+  "qemu_session_type",
+  {
+    description:
+      "Type text into the guest (no shell-prompt wait by default). " +
+      "enter defaults true. Use enter:false for vi insert. Supports : ! punctuation. " +
+      "If expect is set and times out, console is still returned. " +
+      "Prefer j/k over arrow keys for vi. " +
+      VI_RECIPE,
+    inputSchema: {
+      text: z.string().describe('Text to type, e.g. ":wq" or "hello"'),
+      enter: z
+        .boolean()
+        .optional()
+        .describe("Press Enter after text (default true)"),
+      expect: z
+        .string()
+        .optional()
+        .describe("Optional console substring to wait for after typing"),
+      console_lines: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          "Last N non-blank lines; omit/0 for full. Prefer full while in vi (~ dominates tail)."
+        ),
       session_id: z.string().optional(),
       timeout_ms: z.number().int().positive().optional(),
     },
   },
-  async ({ cmd, session_id, timeout_ms }) => {
-    const args = ["session", "cmd"];
-    args.push(...cmd.trim().split(/\s+/));
-    if (session_id) {
-      args.push("--id", session_id);
-    }
-    if (timeout_ms) {
-      args.push("--timeout", String(timeout_ms));
-    }
-    const r = await runQemuConnect(args, {
-      timeoutMs: (timeout_ms ?? 30_000) + 15_000,
+  async ({ text, enter, expect, console_lines, session_id, timeout_ms }) => {
+    const sid = session_id ?? "default";
+    return withSessionLock(sid, async () => {
+      const args = ["session", "type", text, "--id", sid];
+      if (enter === false) {
+        args.push("--no-enter");
+      } else {
+        args.push("--enter");
+      }
+      if (expect) {
+        args.push("--expect", expect);
+      }
+      if (console_lines && console_lines > 0) {
+        args.push("--console-lines", String(console_lines));
+      }
+      if (timeout_ms) {
+        args.push("--timeout", String(timeout_ms));
+      }
+      const r = await runQemuConnect(args, {
+        timeoutMs: (timeout_ms ?? 30_000) + 10_000,
+      });
+      return toolFromCli(r);
     });
-    return toolFromCli(r);
+  }
+);
+
+server.registerTool(
+  "qemu_session_key",
+  {
+    description:
+      "Send a single QMP key (or repeat) — for vi (esc, j, k, ret). " +
+      "qcode: esc, ret, backspace, tab, j, k, a-z, 0-9. " +
+      "Prefer j/k over up/down for vi (arrows may be private bytes on munux).",
+    inputSchema: {
+      qcode: z
+        .string()
+        .describe('QEMU qcode, e.g. "esc", "j", "ret" (prefer j/k over arrows)'),
+      repeat: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .optional()
+        .describe("How many times to send (default 1)"),
+      session_id: z.string().optional(),
+    },
+  },
+  async ({ qcode, repeat, session_id }) => {
+    const sid = session_id ?? "default";
+    return withSessionLock(sid, async () => {
+      const args = ["session", "key", qcode, "--id", sid];
+      if (repeat && repeat > 1) {
+        args.push("--repeat", String(repeat));
+      }
+      const r = await runQemuConnect(args, { timeoutMs: 20_000 });
+      return toolFromCli(r);
+    });
+  }
+);
+
+const scriptStepSchema = z.object({
+  op: z
+    .enum(["type", "key", "cmd", "expect", "console"])
+    .describe("Step kind"),
+  text: z
+    .string()
+    .optional()
+    .describe("For type/cmd: text or shell command"),
+  qcode: z.string().optional().describe("For key: qcode e.g. esc, j"),
+  enter: z.boolean().optional().describe("For type: press Enter (default true)"),
+  expect: z
+    .string()
+    .optional()
+    .describe("For type: wait for this console substring after"),
+  wait: z
+    .boolean()
+    .optional()
+    .describe("For cmd: wait for prompt (default true)"),
+  prompt: z.string().optional().describe("For cmd: prompt override"),
+  repeat: z.number().int().min(1).max(100).optional(),
+  timeout_ms: z.number().int().positive().optional(),
+});
+
+server.registerTool(
+  "qemu_session_script",
+  {
+    description:
+      "Run a batch of session steps under one lock (fewer round-trips for vi scripts). " +
+      "Each step: {op:'type'|'key'|'cmd'|'expect'|'console', ...}. " +
+      VI_RECIPE,
+    inputSchema: {
+      steps: z.array(scriptStepSchema).min(1),
+      session_id: z.string().optional(),
+      console_lines: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          "Last N non-blank lines on step consoles; omit/0 full. Use full for vi scripts."
+        ),
+    },
+  },
+  async ({ steps, session_id, console_lines }) => {
+    const sid = session_id ?? "default";
+    return withSessionLock(sid, async () => {
+      const results: Record<string, unknown>[] = [];
+      let lastConsole: string | null = null;
+      let allOk = true;
+
+      for (let i = 0; i < steps.length; i++) {
+        const s = steps[i]!;
+        const args: string[] = ["session"];
+        if (s.op === "type") {
+          if (!s.text) {
+            return toolJson(
+              { ok: false, error: `step ${i}: type needs text`, results },
+              true
+            );
+          }
+          args.push("type", s.text, "--id", sid);
+          if (s.enter === false) args.push("--no-enter");
+          else args.push("--enter");
+          if (s.expect) args.push("--expect", s.expect);
+          if (s.timeout_ms) args.push("--timeout", String(s.timeout_ms));
+          if (console_lines && console_lines > 0) {
+            args.push("--console-lines", String(console_lines));
+          }
+        } else if (s.op === "key") {
+          if (!s.qcode) {
+            return toolJson(
+              { ok: false, error: `step ${i}: key needs qcode`, results },
+              true
+            );
+          }
+          args.push("key", s.qcode, "--id", sid);
+          if (s.repeat && s.repeat > 1) {
+            args.push("--repeat", String(s.repeat));
+          }
+        } else if (s.op === "cmd") {
+          if (!s.text) {
+            return toolJson(
+              { ok: false, error: `step ${i}: cmd needs text`, results },
+              true
+            );
+          }
+          args.push("cmd", "--id", sid);
+          if (s.wait === false) args.push("--no-wait");
+          if (s.prompt) args.push("--prompt", s.prompt);
+          if (s.timeout_ms) args.push("--timeout", String(s.timeout_ms));
+          if (console_lines && console_lines > 0) {
+            args.push("--console-lines", String(console_lines));
+          }
+          args.push(...s.text.trim().split(/\s+/));
+        } else if (s.op === "expect") {
+          if (!s.text && !s.expect) {
+            return toolJson(
+              { ok: false, error: `step ${i}: expect needs text`, results },
+              true
+            );
+          }
+          args.push(
+            "expect",
+            s.text ?? s.expect!,
+            "--id",
+            sid
+          );
+          if (s.timeout_ms) args.push("--timeout", String(s.timeout_ms));
+        } else if (s.op === "console") {
+          args.push("console", "--id", sid);
+          if (console_lines && console_lines > 0) {
+            args.push("--console-lines", String(console_lines));
+          }
+        }
+
+        const r = await runQemuConnect(args, {
+          timeoutMs: (s.timeout_ms ?? 30_000) + 15_000,
+        });
+        const payload = parseCliJson(r);
+        results.push({
+          step: i,
+          op: s.op,
+          ok: payload.ok ?? r.exitCode === 0,
+          ...payload,
+        });
+        if (typeof payload.console === "string") {
+          lastConsole = payload.console;
+        }
+        if (payload.ok === false || r.exitCode !== 0) {
+          allOk = false;
+          break;
+        }
+      }
+
+      return toolJson(
+        {
+          ok: allOk,
+          exit_code: allOk ? 0 : 1,
+          session_id: sid,
+          steps_run: results.length,
+          results,
+          console: lastConsole,
+        },
+        !allOk
+      );
+    });
   }
 );
 
 server.registerTool(
   "qemu_session_console",
   {
-    description: "Read current VGA console text from an open session.",
+    description:
+      "Read current VGA console text (glyphs only; cursor not shown). " +
+      "console_lines=N returns last N non-blank lines (good for shell). " +
+      "Inside vi, omit console_lines or pass 0 — full screen; otherwise '~' lines dominate the tail.",
     inputSchema: {
       session_id: z.string().optional(),
+      console_lines: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("Last N non-blank lines; omit/0=full (prefer full in vi)"),
     },
   },
-  async ({ session_id }) => {
+  async ({ session_id, console_lines }) => {
     const args = ["session", "console"];
     if (session_id) {
       args.push("--id", session_id);
+    }
+    if (console_lines && console_lines > 0) {
+      args.push("--console-lines", String(console_lines));
     }
     const r = await runQemuConnect(args, { timeoutMs: 15_000 });
     return toolFromCli(r);
@@ -362,7 +796,8 @@ server.registerTool(
 server.registerTool(
   "qemu_session_status",
   {
-    description: "Session liveness + guest plugin status JSON.",
+    description:
+      "Session liveness + guest plugin status. Includes prompt and last_expect for stuck-session debugging.",
     inputSchema: {
       session_id: z.string().optional(),
     },
@@ -386,19 +821,21 @@ server.registerTool(
     },
   },
   async ({ session_id }) => {
-    const args = ["session", "stop"];
-    if (session_id) {
-      args.push("--id", session_id);
-    }
-    const r = await runQemuConnect(args, { timeoutMs: 30_000 });
-    return toolFromCli(r);
+    const sid = session_id ?? "default";
+    return withSessionLock(sid, async () => {
+      const args = ["session", "stop", "--id", sid];
+      const r = await runQemuConnect(args, { timeoutMs: 30_000 });
+      return toolFromCli(r);
+    });
   }
 );
 
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("qemu-connect MCP server running on stdio (v0.3 session+json)");
+  console.error(
+    "qemu-connect MCP server running on stdio (v0.5 console+lock+script)"
+  );
 }
 
 main().catch((err) => {

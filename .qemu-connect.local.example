@@ -1,0 +1,4 @@
+# Copy to .qemu-connect.local and edit. Loaded by CLI + MCP when env unset.
+QEMU_CONNECT_ROOT=/absolute/path/to/qemu-connect
+QEMU_CONNECT_MUNUX=/absolute/path/to/your/munux-or-KFS
+# QEMU_CONNECT_PLUGIN=$HOME/.local/lib/qemu-connect/libqemu-connect.so

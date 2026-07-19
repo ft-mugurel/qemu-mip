@@ -3,15 +3,19 @@
  * Path resolution for installed + dev layouts.
  *
  * Guest ISO/disk priority:
- *   1. QEMU_CONNECT_ISO / QEMU_CONNECT_DISK
- *   2. QEMU_CONNECT_MUNUX/build/{kernel.iso,disk.img}  ← your real munux tree
- *   3. QEMU_CONNECT_ROOT/test/munux/build/...           ← old bundled clone
- *   4. ./test/munux/build/... from cwd
+ *   1. QEMU_CONNECT_ISO / QEMU_CONNECT_DISK (process env)
+ *   2. QEMU_CONNECT_MUNUX from env
+ *   3. QEMU_CONNECT_MUNUX from $ROOT/.qemu-connect.local (or ~/.config/...)
+ *   4. QEMU_CONNECT_ROOT/test/munux/build/...  (bundled clone fallback)
+ *   5. ./test/munux/build/... from cwd
+ *
+ * Process environment always wins over .qemu-connect.local.
  */
 #define _DEFAULT_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #include "paths.h"
 
+#include <ctype.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,6 +78,97 @@ static void set_path(char *dst, size_t n, const char *src)
     }
 }
 
+/* Load KEY=VALUE lines; only setenv when the var is currently unset. */
+static void load_env_file(const char *path)
+{
+    FILE *f;
+    char line[PATH_MAX + 128];
+
+    if (!path || !path[0] || !is_file(path)) {
+        return;
+    }
+    f = fopen(path, "r");
+    if (!f) {
+        return;
+    }
+    while (fgets(line, sizeof(line), f)) {
+        char *p = line;
+        char *eq;
+        char *key;
+        char *val;
+        char *end;
+
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        if (*p == '#' || *p == '\n' || *p == '\0') {
+            continue;
+        }
+        if (strncmp(p, "export ", 7) == 0) {
+            p += 7;
+            while (*p == ' ' || *p == '\t') {
+                p++;
+            }
+        }
+        eq = strchr(p, '=');
+        if (!eq) {
+            continue;
+        }
+        *eq = '\0';
+        key = p;
+        val = eq + 1;
+        /* trim key trailing space */
+        end = key + strlen(key);
+        while (end > key && (end[-1] == ' ' || end[-1] == '\t')) {
+            *--end = '\0';
+        }
+        /* strip trailing newline/CR on value */
+        end = val + strlen(val);
+        while (end > val && (end[-1] == '\n' || end[-1] == '\r')) {
+            *--end = '\0';
+        }
+        /* strip optional quotes around value */
+        if ((val[0] == '"' || val[0] == '\'') && end > val + 1 &&
+            end[-1] == val[0]) {
+            val++;
+            *--end = '\0';
+        }
+        if (!key[0]) {
+            continue;
+        }
+        /* only known keys, and only if unset */
+        if (strcmp(key, "QEMU_CONNECT_ROOT") != 0 &&
+            strcmp(key, "QEMU_CONNECT_HOME") != 0 &&
+            strcmp(key, "QEMU_CONNECT_MUNUX") != 0 &&
+            strcmp(key, "QEMU_CONNECT_ISO") != 0 &&
+            strcmp(key, "QEMU_CONNECT_DISK") != 0 &&
+            strcmp(key, "QEMU_CONNECT_PLUGIN") != 0 &&
+            strcmp(key, "QEMU_CONNECT_CLI") != 0 &&
+            strcmp(key, "QEMU_CONNECT_PROMPT") != 0) {
+            continue;
+        }
+        if (!getenv(key) || !getenv(key)[0]) {
+            setenv(key, val, 0);
+        }
+    }
+    fclose(f);
+}
+
+static void load_local_configs(const char *root)
+{
+    char path[PATH_MAX];
+    const char *home = getenv("HOME");
+
+    if (root && root[0]) {
+        snprintf(path, sizeof(path), "%s/.qemu-connect.local", root);
+        load_env_file(path);
+    }
+    if (home && home[0]) {
+        snprintf(path, sizeof(path), "%s/.config/qemu-connect/env", home);
+        load_env_file(path);
+    }
+}
+
 static void init_paths(void)
 {
     if (g_init) {
@@ -82,33 +177,51 @@ static void init_paths(void)
     g_init = 1;
     resolve_exe_dir();
 
-    const char *env_root = getenv("QEMU_CONNECT_ROOT");
-    const char *env_home = getenv("QEMU_CONNECT_HOME");
+    /* First pass: resolve tool root from env/cwd only (before local file). */
+    {
+        const char *env_root = getenv("QEMU_CONNECT_ROOT");
+        const char *env_home = getenv("QEMU_CONNECT_HOME");
+
+        if (env_root && is_dir(env_root)) {
+            set_path(g_root, sizeof(g_root), env_root);
+        } else if (env_home && is_dir(env_home)) {
+            set_path(g_root, sizeof(g_root), env_home);
+        } else {
+            char cand[PATH_MAX];
+            snprintf(cand, sizeof(cand), "%s/../share/qemu-connect", g_exe_dir);
+            if (is_dir(cand)) {
+                set_path(g_root, sizeof(g_root), cand);
+            } else if (is_file("build/qemu-connect") || is_file("Makefile")) {
+                char cwd[PATH_MAX];
+                if (getcwd(cwd, sizeof(cwd))) {
+                    set_path(g_root, sizeof(g_root), cwd);
+                } else {
+                    snprintf(g_root, sizeof(g_root), ".");
+                }
+            } else {
+                snprintf(g_root, sizeof(g_root), "%s/..", g_exe_dir);
+            }
+        }
+    }
+
+    /*
+     * Load project-local defaults (e.g. QEMU_CONNECT_MUNUX=.../KFS).
+     * Does not override vars already set in the process environment.
+     */
+    load_local_configs(g_root);
+
+    /* Re-read after local file may have set ROOT / MUNUX / PLUGIN / ISO. */
+    {
+        const char *env_root = getenv("QEMU_CONNECT_ROOT");
+        if (env_root && is_dir(env_root)) {
+            set_path(g_root, sizeof(g_root), env_root);
+        }
+    }
+
     const char *env_plugin = getenv("QEMU_CONNECT_PLUGIN");
     const char *env_munux = getenv("QEMU_CONNECT_MUNUX");
     const char *env_iso = getenv("QEMU_CONNECT_ISO");
     const char *env_disk = getenv("QEMU_CONNECT_DISK");
-
-    if (env_root && is_dir(env_root)) {
-        set_path(g_root, sizeof(g_root), env_root);
-    } else if (env_home && is_dir(env_home)) {
-        set_path(g_root, sizeof(g_root), env_home);
-    } else {
-        char cand[PATH_MAX];
-        snprintf(cand, sizeof(cand), "%s/../share/qemu-connect", g_exe_dir);
-        if (is_dir(cand)) {
-            set_path(g_root, sizeof(g_root), cand);
-        } else if (is_file("build/qemu-connect") || is_file("Makefile")) {
-            char cwd[PATH_MAX];
-            if (getcwd(cwd, sizeof(cwd))) {
-                set_path(g_root, sizeof(g_root), cwd);
-            } else {
-                snprintf(g_root, sizeof(g_root), ".");
-            }
-        } else {
-            snprintf(g_root, sizeof(g_root), "%s/..", g_exe_dir);
-        }
-    }
 
     /* munux tree */
     g_munux[0] = '\0';
@@ -204,6 +317,7 @@ const char *qc_default_disk(void)
 
 const char *qc_default_cli_hint(void)
 {
-    return "Set QEMU_CONNECT_MUNUX=/path/to/your/munux (and QEMU_CONNECT_ROOT "
-           "for the tool repo). Optional: QEMU_CONNECT_ISO / QEMU_CONNECT_DISK.";
+    return "Set QEMU_CONNECT_MUNUX=/path/to/your/munux, or put it in "
+           "$QEMU_CONNECT_ROOT/.qemu-connect.local. Optional: "
+           "QEMU_CONNECT_ISO / QEMU_CONNECT_DISK.";
 }
