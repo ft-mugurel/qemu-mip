@@ -96,7 +96,7 @@ qemu-system-x86_64 -display none -machine none -accel tcg \
 ## VGA text scrape (PR2)
 
 Classic PC text mode lives at physical **`0xB8000`**: 80×25 cells, 2 bytes each
-(`char` + attribute). Hobby kernels (including munux) write this region with
+(`char` + attribute). Hobby kernels (including guest) write this region with
 normal stores (often `u16` cells).
 
 The plugin, on every translation block:
@@ -148,4 +148,4 @@ exposed on `status`.
 
 Stores to phys `0xFEE1DEAD..+16` assemble an inline message. When `magic==QCNT`,
 the plugin records an agent event (`READY` / `EXIT` / `LOG`) for `status` /
-`get_agent_event`. Guests opt in; munux does not need to implement this.
+`get_agent_event`. Guests opt in; guest does not need to implement this.

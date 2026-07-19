@@ -19,7 +19,7 @@ Preferred checks:
 ./build/qemu-connect guest help
 
 # several commands (faster)
-./build/qemu-connect session start --prompt '$'   # KFS shell
+./build/qemu-connect session start --prompt '$'   # guest shell
 ./build/qemu-connect session cmd help
 ./build/qemu-connect session type ':w' --no-enter # vi ex-mode chars (maps ':')
 ./build/qemu-connect session key esc
@@ -30,9 +30,9 @@ Typing: **Enter is the default** for `type` / `session type` / `session cmd`.
 Use `--no-enter` / MCP `enter: false` only for partial input (vi insert).
 Punctuation map includes **`:` `!`** and common shell/vi symbols.
 
-## If munux lives in another folder (recommended)
+## If guest lives in another folder (recommended)
 
-**Do not** rely on `$QEMU_CONNECT_ROOT/test/munux` — that is often a stale clone.
+**Do not** rely on `$QEMU_CONNECT_ROOT/test/guest` — that is often a stale clone.
 
 **Preferred (survives reinstall / missing shell env):** pin the tree in
 `.qemu-connect.local` at the qemu-connect repo root (gitignored):
@@ -40,7 +40,7 @@ Punctuation map includes **`:` `!`** and common shell/vi symbols.
 ```sh
 cat > .qemu-connect.local <<'EOF'
 QEMU_CONNECT_ROOT=/absolute/path/to/qemu-connect
-QEMU_CONNECT_MUNUX=/absolute/path/to/YOUR/munux-or-KFS
+QEMU_CONNECT_GUEST=/absolute/path/to/YOUR/kernel
 QEMU_CONNECT_PLUGIN=$HOME/.local/lib/qemu-connect/libqemu-connect.so
 EOF
 ```
@@ -49,9 +49,9 @@ Also supported: process env, `~/.config/qemu-connect/env`, and Grok
 `[mcp_servers.qemu-connect.env]` (see INSTALL.md).
 
 ```sh
-export QEMU_CONNECT_MUNUX=/absolute/path/to/YOUR/munux
+export QEMU_CONNECT_GUEST=/absolute/path/to/YOUR/kernel
 export QEMU_CONNECT_ROOT=/absolute/path/to/qemu-connect
-make -C "$QEMU_CONNECT_MUNUX" iso disk
+make -C "$QEMU_CONNECT_GUEST" iso disk
 ```
 
 `guest` / `session` print the resolved ISO path on stderr — **check it** before
@@ -62,13 +62,13 @@ trusting results.
 ```sh
 # From qemu-connect repo root
 make plugin cli
-make -C "$QEMU_CONNECT_MUNUX" iso disk   # or: make -C /path/to/KFS iso disk
+make -C "$QEMU_CONNECT_GUEST" iso disk   # or: make -C /path/to/your-kernel iso disk
 ```
 
 ## Simplest commands (use these)
 
 ```sh
-./build/qemu-connect guest              # boot, wait for munux>, print console
+./build/qemu-connect guest              # boot, wait for $, print console
 ./build/qemu-connect guest help         # type `help` + Enter, print console
 ./build/qemu-connect guest ls
 ./build/qemu-connect guest cat hello.txt
@@ -82,10 +82,10 @@ make guest CMD='ls bin'
 
 ### What `guest` does for you
 
-1. Starts QEMU with munux **ISO + disk** + plugin + QMP (TCG)
-2. Waits for prompt **`munux>`**
+1. Starts QEMU with guest **ISO + disk** + plugin + QMP (TCG)
+2. Waits for prompt **`$`**
 3. Types your shell line + Enter (if you passed one)
-4. Waits for **`munux>`** again
+4. Waits for **`$`** again
 5. Prints the guest console on **stderr**
 6. Quits QEMU cleanly
 7. Prints JSON on **stdout**: `{"ok":true/false,...,"exit_code":N}`
@@ -108,9 +108,9 @@ Use when you need custom ISO/disk paths or multi-step scripts:
 
 ```sh
 ./build/qemu-connect run \
-  --iso test/munux/build/kernel.iso \
-  --disk test/munux/build/disk.img \
-  --expect 'munux>' \
+  --iso test/guest/build/kernel.iso \
+  --disk test/guest/build/disk.img \
+  --expect '$' \
   --type help \
   --show
 ```
@@ -118,7 +118,7 @@ Use when you need custom ISO/disk paths or multi-step scripts:
 | Flag | Meaning |
 |------|---------|
 | `--iso PATH` | CD image (**required** for `run`) |
-| `--disk PATH` | IDE disk (munux rootfs) |
+| `--disk PATH` | IDE disk (guest rootfs) |
 | `--expect TEXT` | Wait until console contains TEXT (order preserved) |
 | `--type TEXT` | Type TEXT then Enter |
 | `--show` | Print console when finished |
@@ -127,35 +127,21 @@ Use when you need custom ISO/disk paths or multi-step scripts:
 
 Do **not** hand-roll long `qemu-system-x86_64 …` lines for normal checks.
 
-## Current munux baseline (U6+)
+## Guest baseline (configure for your kernel)
 
-munux boots to an **interactive shell** (not a panic screen):
+Set **`QEMU_CONNECT_PROMPT`** (or `session start --prompt`) to the string that
+means "shell ready" on **your** guest (examples: `$`, `#`, `kfs>`, `ready`).
 
-| Signal | Meaning |
-|--------|---------|
-| `munux shell ready` | Shell started |
-| **`munux>`** | Prompt (primary success marker) |
-| FS lines like `ext2 mounted` | Disk attached correctly |
+After `guest help` (or your shell's help command), the console should show
+command output and the prompt again.
 
-Typical boot scrape includes:
-
-```text
-munux x86_64
-long mode OK
-…
-fs: ext2 mounted root=2
-munux shell ready. Type `help`.
-munux>
-```
-
-After `guest help`, console should include `munux shell commands:` and a new `munux>`.
 
 ## What not to do
 
 - Stop at compile success
 - Open interactive QEMU GUI for automation
 - Use KVM for plugin checks (`guest`/`run` already use TCG)
-- Expect old panic strings (`KERNEL PANIC` / `kfs>`) — outdated
+- Gate on obsolete banner strings that no longer match your guest
 - Manually juggle sockets/QMP unless debugging the tool itself
 
 ## Advanced (optional)
@@ -176,8 +162,8 @@ Protocol details: [docs/protocol.md](docs/protocol.md).
 | [README.md](README.md) | Build + overview |
 | [docs/architecture.md](docs/architecture.md) | Plugin + QMP design |
 | [docs/protocol.md](docs/protocol.md) | JSON wire protocol |
-| [docs/munux-AGENTS-snippet.md](docs/munux-AGENTS-snippet.md) | Paste into munux repo |
-| [test/README.md](test/README.md) | Local munux clone |
+| [docs/guest-AGENTS-snippet.md](docs/guest-AGENTS-snippet.md) | Paste into guest repo |
+| [test/README.md](test/README.md) | Local guest clone |
 
 Grok skill: `.grok/skills/qemu-connect/` → `/qemu-connect`
 

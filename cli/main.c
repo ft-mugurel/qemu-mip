@@ -39,7 +39,7 @@ static int usage(const char *argv0)
             "  qmp-ping | quit | key <qcode>\n"
             "  type <string> [--no-enter]   # Enter (ret) by default; --no-enter for partial\n"
             "Orchestration:\n"
-            "  guest [shell command...]            # one-shot munux boot+cmd\n"
+            "  guest [shell command...]            # one-shot guest boot+cmd\n"
             "  session start|cmd|key|type|console|stop  # multi-cmd without reboot\n"
             "  run --iso PATH [--disk] [--expect/--type] [--show]\n"
             "\n"

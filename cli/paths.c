@@ -4,10 +4,10 @@
  *
  * Guest ISO/disk priority:
  *   1. QEMU_CONNECT_ISO / QEMU_CONNECT_DISK (process env)
- *   2. QEMU_CONNECT_MUNUX from env
- *   3. QEMU_CONNECT_MUNUX from $ROOT/.qemu-connect.local (or ~/.config/...)
- *   4. QEMU_CONNECT_ROOT/test/munux/build/...  (bundled clone fallback)
- *   5. ./test/munux/build/... from cwd
+ *   2. QEMU_CONNECT_GUEST from env
+ *   3. QEMU_CONNECT_GUEST from $ROOT/.qemu-connect.local (or ~/.config/...)
+ *   4. QEMU_CONNECT_ROOT/test/guest/build/...  (bundled clone fallback)
+ *   5. ./test/guest/build/... from cwd
  *
  * Process environment always wins over .qemu-connect.local.
  */
@@ -28,7 +28,7 @@ static char g_plugin[PATH_MAX];
 static char g_iso[PATH_MAX];
 static char g_disk[PATH_MAX];
 static char g_root[PATH_MAX];
-static char g_munux[PATH_MAX];
+static char g_guest[PATH_MAX];
 static int g_init;
 
 static int is_file(const char *p)
@@ -139,7 +139,7 @@ static void load_env_file(const char *path)
         /* only known keys, and only if unset */
         if (strcmp(key, "QEMU_CONNECT_ROOT") != 0 &&
             strcmp(key, "QEMU_CONNECT_HOME") != 0 &&
-            strcmp(key, "QEMU_CONNECT_MUNUX") != 0 &&
+            strcmp(key, "QEMU_CONNECT_GUEST") != 0 &&
             strcmp(key, "QEMU_CONNECT_ISO") != 0 &&
             strcmp(key, "QEMU_CONNECT_DISK") != 0 &&
             strcmp(key, "QEMU_CONNECT_PLUGIN") != 0 &&
@@ -205,12 +205,12 @@ static void init_paths(void)
     }
 
     /*
-     * Load project-local defaults (e.g. QEMU_CONNECT_MUNUX=.../KFS).
+     * Load project-local defaults (e.g. QEMU_CONNECT_GUEST=.../guest).
      * Does not override vars already set in the process environment.
      */
     load_local_configs(g_root);
 
-    /* Re-read after local file may have set ROOT / MUNUX / PLUGIN / ISO. */
+    /* Re-read after local file may have set ROOT / GUEST / PLUGIN / ISO. */
     {
         const char *env_root = getenv("QEMU_CONNECT_ROOT");
         if (env_root && is_dir(env_root)) {
@@ -219,14 +219,14 @@ static void init_paths(void)
     }
 
     const char *env_plugin = getenv("QEMU_CONNECT_PLUGIN");
-    const char *env_munux = getenv("QEMU_CONNECT_MUNUX");
+    const char *env_guest = getenv("QEMU_CONNECT_GUEST");
     const char *env_iso = getenv("QEMU_CONNECT_ISO");
     const char *env_disk = getenv("QEMU_CONNECT_DISK");
 
-    /* munux tree */
-    g_munux[0] = '\0';
-    if (env_munux && is_dir(env_munux)) {
-        set_path(g_munux, sizeof(g_munux), env_munux);
+    /* guest tree */
+    g_guest[0] = '\0';
+    if (env_guest && is_dir(env_guest)) {
+        set_path(g_guest, sizeof(g_guest), env_guest);
     }
 
     /* plugin */
@@ -255,17 +255,17 @@ static void init_paths(void)
     /* ISO */
     if (env_iso && env_iso[0]) {
         set_path(g_iso, sizeof(g_iso), env_iso);
-    } else if (g_munux[0]) {
+    } else if (g_guest[0]) {
         char p[PATH_MAX];
-        snprintf(p, sizeof(p), "%s/build/kernel.iso", g_munux);
+        snprintf(p, sizeof(p), "%s/build/kernel.iso", g_guest);
         set_path(g_iso, sizeof(g_iso), p);
     } else {
         char iso1[PATH_MAX];
-        snprintf(iso1, sizeof(iso1), "%s/test/munux/build/kernel.iso", g_root);
+        snprintf(iso1, sizeof(iso1), "%s/test/guest/build/kernel.iso", g_root);
         if (is_file(iso1)) {
             set_path(g_iso, sizeof(g_iso), iso1);
-        } else if (is_file("test/munux/build/kernel.iso")) {
-            snprintf(g_iso, sizeof(g_iso), "test/munux/build/kernel.iso");
+        } else if (is_file("test/guest/build/kernel.iso")) {
+            snprintf(g_iso, sizeof(g_iso), "test/guest/build/kernel.iso");
         } else {
             set_path(g_iso, sizeof(g_iso), iso1);
         }
@@ -274,17 +274,17 @@ static void init_paths(void)
     /* disk */
     if (env_disk && env_disk[0]) {
         set_path(g_disk, sizeof(g_disk), env_disk);
-    } else if (g_munux[0]) {
+    } else if (g_guest[0]) {
         char p[PATH_MAX];
-        snprintf(p, sizeof(p), "%s/build/disk.img", g_munux);
+        snprintf(p, sizeof(p), "%s/build/disk.img", g_guest);
         set_path(g_disk, sizeof(g_disk), p);
     } else {
         char disk1[PATH_MAX];
-        snprintf(disk1, sizeof(disk1), "%s/test/munux/build/disk.img", g_root);
+        snprintf(disk1, sizeof(disk1), "%s/test/guest/build/disk.img", g_root);
         if (is_file(disk1)) {
             set_path(g_disk, sizeof(g_disk), disk1);
-        } else if (is_file("test/munux/build/disk.img")) {
-            snprintf(g_disk, sizeof(g_disk), "test/munux/build/disk.img");
+        } else if (is_file("test/guest/build/disk.img")) {
+            snprintf(g_disk, sizeof(g_disk), "test/guest/build/disk.img");
         } else {
             set_path(g_disk, sizeof(g_disk), disk1);
         }
@@ -317,7 +317,7 @@ const char *qc_default_disk(void)
 
 const char *qc_default_cli_hint(void)
 {
-    return "Set QEMU_CONNECT_MUNUX=/path/to/your/munux, or put it in "
+    return "Set QEMU_CONNECT_GUEST=/path/to/your/kernel, or put it in "
            "$QEMU_CONNECT_ROOT/.qemu-connect.local. Optional: "
            "QEMU_CONNECT_ISO / QEMU_CONNECT_DISK.";
 }

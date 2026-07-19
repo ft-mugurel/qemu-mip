@@ -3,22 +3,22 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CLI="$ROOT/build/qemu-connect"
-MUNUX="$ROOT/test/munux"
+GUEST="$ROOT/test/guest"
 PLUGIN="$ROOT/build/libqemu-connect.so"
 
-if [[ ! -d "$MUNUX" ]]; then
-  echo "SKIP munux"
+if [[ ! -d "$GUEST" ]]; then
+  echo "SKIP guest"
   exit 0
 fi
 
 make -C "$ROOT" plugin cli
-make -C "$MUNUX" iso disk >/dev/null
+make -C "$GUEST" iso disk >/dev/null
 
 out=$("$CLI" run \
-  --iso "$MUNUX/build/kernel.iso" \
-  --disk "$MUNUX/build/disk.img" \
+  --iso "$GUEST/build/kernel.iso" \
+  --disk "$GUEST/build/disk.img" \
   --plugin "$PLUGIN" \
-  --expect 'munux>' \
+  --expect '$' \
   --type help \
   --show \
   --timeout 60000)

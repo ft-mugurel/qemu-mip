@@ -49,7 +49,7 @@ typedef struct {
     char logpath[256];
     char iso[512];
     char disk[512];
-    char prompt[64];      /* shell prompt substring, e.g. "munux>" or "$" */
+    char prompt[64];      /* shell prompt substring, e.g. "$" or "$" */
     char last_expect[128]; /* last needle waited on (debug stuck sessions) */
 } qc_session_t;
 
@@ -345,7 +345,7 @@ static const char *default_shell_prompt(void)
     if (p && p[0]) {
         return p;
     }
-    return "munux>";
+    return "$";
 }
 
 /* Prefer session-stored prompt, then env default. */
@@ -417,7 +417,7 @@ static int save_session(const qc_session_t *s)
             "  \"last_expect\": \"%s\"\n"
             "}\n",
             s->id, (int)s->pid, s->plugin_sock, s->qmp_sock, s->logpath, s->iso,
-            s->disk, s->prompt[0] ? s->prompt : "munux>",
+            s->disk, s->prompt[0] ? s->prompt : "$",
             s->last_expect[0] ? s->last_expect : "");
     fclose(f);
     return 0;
@@ -524,8 +524,8 @@ static void usage(void)
             "\n"
             "  start [--id NAME] [--iso PATH] [--disk PATH] [--plugin PATH]\n"
             "        [--prompt TEXT] [--timeout MS] [--no-wait]\n"
-            "      Boot QEMU once; wait for shell prompt (default munux> or\n"
-            "      QEMU_CONNECT_PROMPT / --prompt; KFS often uses $).\n"
+            "      Boot QEMU once; wait for shell prompt (default $ or\n"
+            "      QEMU_CONNECT_PROMPT / --prompt; guest often uses $).\n"
             "\n"
             "  cmd <shell words...> [--id NAME] [--prompt TEXT] [--timeout MS]\n"
             "        [--no-wait] [--console-lines N]\n"
@@ -546,8 +546,8 @@ static void usage(void)
             "  stop [--id NAME]        QMP quit + cleanup\n"
             "\n"
             "Default id: default\n"
-            "Defaults: QEMU_CONNECT_MUNUX or $ROOT/.qemu-connect.local\n"
-            "  (fallback: test/munux/build/kernel.iso + disk.img)\n"
+            "Defaults: QEMU_CONNECT_GUEST or $ROOT/.qemu-connect.local\n"
+            "  (fallback: test/guest/build/kernel.iso + disk.img)\n"
             "cmd/type/key take a per-session flock (no parallel interleave).\n"
             "All subcommands print one JSON object on stdout.\n");
 }

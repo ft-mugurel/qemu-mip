@@ -2,7 +2,7 @@
 # PR3-ish: after shell is up, shadow get_console works; refresh either works or times out.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-MUNUX="$ROOT/test/munux"
+GUEST="$ROOT/test/guest"
 PLUGIN="$ROOT/build/libqemu-connect.so"
 CLI="$ROOT/build/qemu-connect"
 RUNTIME="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
@@ -11,8 +11,8 @@ QSOCK="$RUNTIME/qemu-connect-refresh-$$.qmp"
 LOG="$RUNTIME/qemu-connect-refresh-$$.log"
 QPID=""
 
-if [[ ! -d "$MUNUX" ]]; then
-  echo "SKIP munux"
+if [[ ! -d "$GUEST" ]]; then
+  echo "SKIP guest"
   exit 0
 fi
 
@@ -26,9 +26,9 @@ cleanup() {
 trap cleanup EXIT
 
 make -C "$ROOT" plugin cli
-make -C "$MUNUX" iso disk >/dev/null
-ISO="$MUNUX/build/kernel.iso"
-DISK="$MUNUX/build/disk.img"
+make -C "$GUEST" iso disk >/dev/null
+ISO="$GUEST/build/kernel.iso"
+DISK="$GUEST/build/disk.img"
 
 rm -f "$SOCK" "$QSOCK"
 qemu-system-x86_64 -display none -m 512M -accel tcg \
@@ -42,10 +42,10 @@ qemu-system-x86_64 -display none -m 512M -accel tcg \
 QPID=$!
 
 for _ in $(seq 1 100); do [[ -S "$SOCK" ]] && break; sleep 0.1; done
-"$CLI" --socket "$SOCK" expect 'munux>' --timeout 60000
+"$CLI" --socket "$SOCK" expect '$' --timeout 60000
 
 json=$("$CLI" --socket "$SOCK" get_console)
-echo "$json" | grep -q 'munux>' || { echo "FAIL shadow missing prompt"; exit 1; }
+echo "$json" | grep -q '$' || { echo "FAIL shadow missing prompt"; exit 1; }
 echo "$json" | grep -q '"source":"shadow"' || { echo "FAIL source"; exit 1; }
 echo "OK shadow console at shell"
 

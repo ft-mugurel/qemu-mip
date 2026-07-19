@@ -445,11 +445,11 @@ static void usage_run(void)
     fprintf(stderr,
             "Usage:\n"
             "  qemu-connect run --iso PATH [options] [steps...]\n"
-            "  qemu-connect guest [shell command...]     # simple munux helper\n"
+            "  qemu-connect guest [shell command...]     # simple guest helper\n"
             "\n"
             "Options:\n"
             "  --iso PATH         CD/ISO (required for run)\n"
-            "  --disk PATH        Optional IDE disk (e.g. munux disk.img)\n"
+            "  --disk PATH        Optional IDE disk (e.g. guest disk.img)\n"
             "  --plugin PATH      default: build/libqemu-connect.so\n"
             "  --mem SIZE         default: 512M\n"
             "  --timeout MS       per-expect timeout (default 60000)\n"
@@ -465,7 +465,7 @@ static void usage_run(void)
             "  qemu-connect guest\n"
             "  qemu-connect guest help\n"
             "  qemu-connect guest ls\n"
-            "  qemu-connect run --iso k.iso --disk d.img --expect 'munux>' \\\n"
+            "  qemu-connect run --iso k.iso --disk d.img --expect '$' \\\n"
             "      --type help --show\n"
             "\n"
             "Exit: 0 ok, 1 step fail, 2 missing iso/usage, 3 qemu crash, 4 connect fail\n");
@@ -822,8 +822,8 @@ int qc_cmd_run(int argc, char **argv)
 
 /*
  * guest [cmd...]
- *   Boots munux/KFS with defaults, waits for shell prompt, optional cmd, shows console.
- *   Prompt: QEMU_CONNECT_PROMPT (default "munux>"); KFS often uses "$".
+ *   Boots guest kernel with defaults, waits for shell prompt, optional cmd, shows console.
+ *   Prompt: QEMU_CONNECT_PROMPT (default "$"); guest often uses "$".
  */
 int qc_cmd_guest(int argc, char **argv)
 {
@@ -834,7 +834,7 @@ int qc_cmd_guest(int argc, char **argv)
     (void)qc_default_iso();
     const char *prompt = getenv("QEMU_CONNECT_PROMPT");
     if (!prompt || !prompt[0]) {
-        prompt = "munux>";
+        prompt = "$";
     }
     int timeout_ms = 60000;
     int console_lines = 0;
@@ -869,11 +869,11 @@ int qc_cmd_guest(int argc, char **argv)
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             fprintf(stderr,
                     "Usage: qemu-connect guest [shell words...]\n"
-                    "  Boots munux/KFS (iso+disk), waits for shell prompt,\n"
+                    "  Boots guest kernel (iso+disk), waits for shell prompt,\n"
                     "  types the shell command if given, prints console.\n"
                     "  Success JSON always includes \"console\".\n"
-                    "Env: QEMU_CONNECT_MUNUX=/path/to/kernel (or .qemu-connect.local)\n"
-                    "     QEMU_CONNECT_PROMPT=munux> or $\n"
+                    "Env: QEMU_CONNECT_GUEST=/path/to/kernel (or .qemu-connect.local)\n"
+                    "     QEMU_CONNECT_PROMPT=$ or $\n"
                     "Flags: --console-lines N  (last N non-blank lines in JSON)\n"
                     "Examples:\n"
                     "  qemu-connect guest help\n"
@@ -909,7 +909,7 @@ int qc_cmd_guest(int argc, char **argv)
             (step_t){ .kind = STEP_EXPECT, .arg = prompt, .ok = false };
     }
 
-    fprintf(stderr, "guest: munux  iso=%s  disk=%s  prompt=%s\n", iso, disk,
+    fprintf(stderr, "guest: guest  iso=%s  disk=%s  prompt=%s\n", iso, disk,
             prompt);
     return run_session(iso, disk, plugin, "512M", "qemu-system-x86_64",
                        timeout_ms, steps, nsteps, true /* stderr show */,

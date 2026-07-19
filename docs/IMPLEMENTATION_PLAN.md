@@ -17,7 +17,7 @@
 
 **qemu-connect** is an out-of-tree **QEMU TCG plugin** (`libqemu-connect.so`) plus a small **host CLI** (`qemu-connect`) that let coding agents boot freestanding kernels under QEMU and **observe and drive** them without a human watching VGA or typing at PS/2.
 
-The problem is concrete: agents can already compile hobby kernels (e.g. **munux**, formerly KFS), but QEMU’s interactive surface (VGA text + keyboard) is invisible to them. Serial-only workflows fail for VGA-centric kernels that never implement a UART.
+The problem is concrete: agents can already compile hobby kernels (e.g. **guest**, formerly guest), but QEMU’s interactive surface (VGA text + keyboard) is invisible to them. Serial-only workflows fail for VGA-centric kernels that never implement a UART.
 
 The chosen approach (locked):
 
@@ -51,25 +51,25 @@ Local environment (verified):
 - QEMU **11.0.1**, `QEMU_PLUGIN_VERSION` **6** at `/usr/include/qemu-plugin.h`
 - Modern APIs available: `qemu_plugin_read/write_memory_{vaddr,hwaddr}`, registers, `qemu_plugin_set_pc`, discontinuity callbacks, time control
 
-### Test guest: munux (`test/munux`, gitignored)
+### Test guest: guest (`test/guest`, gitignored)
 
-- Remote: `git@github.com:ft-mugurel/munux.git`
+- Remote: `<your-kernel-repo-url>`
 - x86_64 Multiboot2 GRUB ISO: `make iso` → `build/kernel.iso`
 - Typical QEMU: `qemu-system-x86_64 -cdrom build/kernel.iso -boot order=d -m 512M`
 - **Must use TCG** (no KVM) when plugin is loaded
 - Early bring-up path (`src/kernel.rs` + `src/vga_print.rs`) writes **directly** to `0xB8000` (`*mut u16`). Boot sequence:
-  1. Transient banners: `munux x86_64`, `long mode OK`, `multiboot2: OK`, `GDT+TSS: OK`, IDT gate count
+  1. Transient banners: `guest x86_64`, `long mode OK`, `multiboot2: OK`, `GDT+TSS: OK`, IDT gate count
   2. Deliberate `ud2` (vector 6)
   3. `exception_handler` (`src/interrupts/exceptions.rs`) calls **`clear_screen()`**, then paints the **stable end-state**:
-     - `*** munux KERNEL PANIC ***`
+     - `*** guest KERNEL PANIC ***`
      - `CPU exception`
      - `Invalid opcode (#UD)`
      - `vector=6` (and register dump)
      - `System halted.`
   4. Permanent `cli; hlt` (no further TB progress)
-- **Agent smoke must assert the stable panic screen**, not the ephemeral pre-`ud2` banners. Banner dwell is sub-millisecond relative to 50–100 ms CLI poll intervals — CI that gates on `munux x86_64` / `long mode OK` will flake or fail after halt.
-- Note: deliberate `ud2` produces **`*** munux KERNEL PANIC ***`** (exception path). The Rust `panic_handler` string `*** munux RUST PANIC ***` is a **different** path and is **not** the default smoke target.
-- Historical `SMOKE.md` targets full shell (`kfs>`, `help`, `ls`, …); **x86_64 port is partial** — full shell is **not** the current agent target until munux catches up
+- **Agent smoke must assert the stable panic screen**, not the ephemeral pre-`ud2` banners. Banner dwell is sub-millisecond relative to 50–100 ms CLI poll intervals — CI that gates on `guest x86_64` / `long mode OK` will flake or fail after halt.
+- Note: deliberate `ud2` produces **`*** guest KERNEL PANIC ***`** (exception path). The Rust `panic_handler` string `*** guest RUST PANIC ***` is a **different** path and is **not** the default smoke target.
+- Historical `SMOKE.md` targets full shell (`kfs>`, `help`, `ls`, …); **x86_64 port is partial** — full shell is **not** the current agent target until guest catches up
 
 ### Pain points that agents hit today
 
@@ -87,8 +87,8 @@ Local environment (verified):
 
 1. **Agent-useful console**: after boot, `get_console` returns the full 80×25 character plane (and eventually wait/`expect` helpers).
 2. **Shareable artifact**: ship `.so` + CLI; users do **not** rebuild QEMU.
-3. **Zero guest changes first**: VGA path works for munux-as-is; hypercall is optional later.
-4. **Continuous munux testing**: Makefile targets boot munux ISO under the plugin and assert the **stable post-`ud2` panic screen** (primary), with optional best-effort transient banner checks only if munux adds a hold flag later.
+3. **Zero guest changes first**: VGA path works for guest-as-is; hypercall is optional later.
+4. **Continuous guest testing**: Makefile targets boot guest ISO under the plugin and assert the **stable post-`ud2` panic screen** (primary), with optional best-effort transient banner checks only if guest adds a hold flag later.
 5. **Independently reviewable PRs**: each phase leaves `main` buildable and useful.
 6. **Drive interaction**: CLI can inject keys via QMP and quit QEMU cleanly.
 7. **Safe concurrency**: socket I/O never races VGA shadow or calls plugin memory APIs off vCPU context without a defined handoff.
@@ -101,7 +101,7 @@ Local environment (verified):
 - Not full graphics framebuffer capture (text mode only initially).
 - Not KVM acceleration while plugin is loaded (TCG required).
 - Not a full MCP server in the first PRs (optional later, listed in roadmap).
-- Not multi-architecture beyond x86_64 text VGA in the initial smoke path (plugin code should stay arch-agnostic where possible; tests focus on x86_64 munux).
+- Not multi-architecture beyond x86_64 text VGA in the initial smoke path (plugin code should stay arch-agnostic where possible; tests focus on x86_64 guest).
 
 ---
 
@@ -131,7 +131,7 @@ flowchart TB
     QMP --> Keys["send-key / input-send-event / quit"]
   end
 
-  Guest["Guest kernel munux"] -->|"stores to 0xB8000"| MemCB
+  Guest["Guest kernel guest"] -->|"stores to 0xB8000"| MemCB
   Guest -->|"optional store to 0xFEE1DEAD"| Hyper
 ```
 
@@ -174,7 +174,7 @@ That fails when:
    - `qemu_plugin_register_vcpu_idle_cb` (when guest idles — fires when entering idle, **not** again for later requests while already halted), and/or
    - TB translate as a last-resort fallback.
 4. **Every queued vCPU op has a timeout** (default **250 ms**, configurable later). On timeout return  
-   `{"ok":false,"error":"vcpu_idle_timeout"}` — never wait forever. After munux’s permanent `cli; hlt`, **no** drain callback re-enters for new requests; timeouts are mandatory correctness, not optional polish.
+   `{"ok":false,"error":"vcpu_idle_timeout"}` — never wait forever. After guest’s permanent `cli; hlt`, **no** drain callback re-enters for new requests; timeouts are mandatory correctness, not optional polish.
 5. Keep nonblocking `qc_server_poll` as a **fallback** for single-threaded debug builds if desired (`socket_thread=off` plugin arg).
 
 **`get_console` default policy (normative):**
@@ -309,7 +309,7 @@ static void vga_mem_cb(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
     size = 1u << qemu_plugin_mem_size_shift(info);
     raw = mem_value_as_u64(val);
 
-    /* munux: volatile u16 stores of (attr<<8)|char — LE host puts char in low byte.
+    /* guest: volatile u16 stores of (attr<<8)|char — LE host puts char in low byte.
      * qc_vga_note_store already takes even offsets as character bytes. */
     qc_vga_lock(vga);
     qc_vga_note_store(vga, phys, raw, size);
@@ -317,7 +317,7 @@ static void vga_mem_cb(unsigned int vcpu_index, qemu_plugin_meminfo_t info,
 }
 ```
 
-**LE u16 note:** munux `vga_print.rs` writes `cell = (color as u16) << 8 | b as u16`. On little-endian hosts, byte 0 of the value is the character and byte 1 is the attribute — matching `qc_vga_note_store`’s even-offset character extraction.
+**LE u16 note:** guest `vga_print.rs` writes `cell = (color as u16) << 8 | b as u16`. On little-endian hosts, byte 0 of the value is the character and byte 1 is the attribute — matching `qc_vga_note_store`’s even-offset character extraction.
 
 **Performance risk (Medium):** instrumenting **all** stores is costly on TCG. Mitigations, in order:
 
@@ -359,7 +359,7 @@ Useful when:
 - Catch-up after attach mid-boot **before** permanent halt.
 - `vga=off` recovery experiments.
 
-**Not** a substitute for store callbacks under munux permanent halt — refresh will hit `vcpu_idle_timeout` there.
+**Not** a substitute for store callbacks under guest permanent halt — refresh will hit `vcpu_idle_timeout` there.
 
 **Phase C hybrid (recommended product behavior):** keep store callbacks for `dirty`/`write_count` + low-latency updates; default `get_console` is shadow-only; optional explicit `refresh:true` with timeout.
 
@@ -369,17 +369,17 @@ Useful when:
 |-----------|--------|
 | `qemu_plugin_get_hwaddr` returns NULL | Skip update; increment miss counter; rate-limited `qemu_plugin_outs` once |
 | `qemu_plugin_hwaddr_is_io(hw) == true` but phys in VGA range | **Still process** — do not drop IO hits |
-| Store callbacks fire, `mem_cb_vga_hit > 0` | Happy path for munux smoke |
+| Store callbacks fire, `mem_cb_vga_hit > 0` | Happy path for guest smoke |
 | Many mem callbacks, zero VGA hits after guest should have painted | One-shot diagnostic log — investigate phys vs vaddr |
 | `read_memory_hwaddr(0xB8000)` fails | Return `hwaddr_read_failed`; leave shadow unchanged |
 
-PR2 acceptance **requires** a measured munux (or tiny asm) run under `-display none -accel tcg` proving `write_count > 0` and non-space panic text via **shadow** (not refresh).
+PR2 acceptance **requires** a measured guest (or tiny asm) run under `-display none -accel tcg` proving `write_count > 0` and non-space panic text via **shadow** (not refresh).
 
-#### munux-specific notes
+#### guest-specific notes
 
 - Early path uses identity-mapped `0xB8000` volatile `u16` cells (`color<<8 | char`) — matches `qc_vga_note_store` LE character-at-even-offset logic.
 - After deliberate `ud2`, `exception_handler` **clears** the screen and paints the panic frame; then permanent `cli; hlt`.
-- **Server thread** must still answer shadow-only `get_console` so agents can read **`*** munux KERNEL PANIC ***`**, `Invalid opcode (#UD)`, and `System halted.` without any further TB activity or refresh.
+- **Server thread** must still answer shadow-only `get_console` so agents can read **`*** guest KERNEL PANIC ***`**, `Invalid opcode (#UD)`, and `System halted.` without any further TB activity or refresh.
 
 ### Protocol evolution
 
@@ -408,7 +408,7 @@ Successful response (**required** fields):
 | `dirty` | bool | yes | Set `true` on any store into shadow; **cleared to `false` on successful snapshot** for this response |
 | `source` | string | yes | `"shadow"` or `"refresh"` |
 
-Example (munux **stable** panic screen, shadow path):
+Example (guest **stable** panic screen, shadow path):
 
 ```json
 → {"cmd":"get_console"}
@@ -418,7 +418,7 @@ Example (munux **stable** panic screen, shadow path):
      "text_len":2074,
      "dirty":false,
      "source":"shadow",
-     "text":"*** munux KERNEL PANIC ***\nCPU exception\n\nInvalid opcode (#UD)\n..."
+     "text":"*** guest KERNEL PANIC ***\nCPU exception\n\nInvalid opcode (#UD)\n..."
    }}
 ```
 
@@ -460,7 +460,7 @@ sequenceDiagram
   participant QEMU
   participant Plugin
 
-  Agent->>CLI: run --iso ... --expect "*** munux KERNEL PANIC ***" --timeout 15000
+  Agent->>CLI: run --iso ... --expect "*** guest KERNEL PANIC ***" --timeout 15000
   CLI->>QEMU: spawn with -plugin ... -qmp unix:qmp.sock,server,nowait
   QEMU->>Plugin: qemu_plugin_install
   Plugin-->>CLI: control socket ready
@@ -481,13 +481,13 @@ sequenceDiagram
 | `key <name>...` | Named keys (`ret`, `esc`, …) |
 | `run ...` | Orchestrate spawn + smoke (later PR) |
 
-QEMU launch template for munux:
+QEMU launch template for guest:
 
 ```sh
 qemu-system-x86_64 \
   -display none \
   -m 512M \
-  -cdrom test/munux/build/kernel.iso \
+  -cdrom test/guest/build/kernel.iso \
   -boot order=d \
   -accel tcg \
   -plugin ./build/libqemu-connect.so,socket=/tmp/qemu-connect.sock \
@@ -508,7 +508,7 @@ Magic physical address `QEMU_CONNECT_HYPERCALL_PHYS` (`0xFEE1DEAD`):
 - Guest stores a small struct or command word.
 - Mem callback recognizes phys address → updates plugin-side status (`AGENT_READY`, `AGENT_EXIT`, exit code).
 - Enables structured pass/fail without parsing VGA.
-- **No munux change required for early PRs**; document the ABI when implemented.
+- **No guest change required for early PRs**; document the ABI when implemented.
 
 Suggested minimal ABI (document in `docs/protocol.md` when implemented).
 
@@ -545,21 +545,21 @@ Extend root `Makefile`:
 | `all` / `plugin` / `cli` | Existing |
 | `test-load` | Existing: `-machine none` plugin load |
 | `test-ping` | Spawn QEMU+plugin, CLI ping, quit |
-| `test-munux-iso` | Build munux ISO if present |
-| `test-munux-panic` | **Primary munux smoke**: boot ISO, shadow `get_console`/`expect` for stable panic strings |
-| `test-munux-banner` | **Optional / best-effort only** — transient pre-`ud2` strings; **not** in default `smoke` |
-| `smoke` | `test-ping` + `test-munux-panic` when `test/munux` exists |
+| `test-guest-iso` | Build guest ISO if present |
+| `test-guest-panic` | **Primary guest smoke**: boot ISO, shadow `get_console`/`expect` for stable panic strings |
+| `test-guest-banner` | **Optional / best-effort only** — transient pre-`ud2` strings; **not** in default `smoke` |
+| `smoke` | `test-ping` + `test-guest-panic` when `test/guest` exists |
 
 Helper scripts under `scripts/` and `examples/`:
 
-- `scripts/run-munux.sh` — launch QEMU with plugin + QMP
-- `examples/munux-panic.sh` — agent-shaped primary smoke (stable panic screen)
-- `examples/munux-banner.sh` — optional/experimental only (transient banners)
+- `scripts/run-guest.sh` — launch QEMU with plugin + QMP
+- `examples/guest-panic.sh` — agent-shaped primary smoke (stable panic screen)
+- `examples/guest-banner.sh` — optional/experimental only (transient banners)
 - Keep `examples/minimal-ping.sh`
 
-**Missing munux skip policy (normative):** if `test/munux` is absent, `test-munux-iso` / `test-munux-panic` / `test-munux-banner` print `SKIP munux (clone into test/munux)` and **exit 0**. `smoke` still runs `test-ping` (must pass). Full agent validation requires munux clone + build deps. Do **not** use exit 77.
+**Missing guest skip policy (normative):** if `test/guest` is absent, `test-guest-iso` / `test-guest-panic` / `test-guest-banner` print `SKIP guest (clone into test/guest)` and **exit 0**. `smoke` still runs `test-ping` (must pass). Full agent validation requires guest clone + build deps. Do **not** use exit 77.
 
-munux remains **gitignored** (`/test/*/`); document clone in `test/README.md` (already present).
+guest remains **gitignored** (`/test/*/`); document clone in `test/README.md` (already present).
 
 ### Directory layout (target after plan)
 
@@ -631,11 +631,11 @@ void qc_mem_register_tb(struct qemu_plugin_tb *tb, qc_vga_state_t *vga);
 
 ```sh
 ./build/qemu-connect --socket "$SOCK" get_console          # full text
-./build/qemu-connect --socket "$SOCK" expect "*** munux KERNEL PANIC ***" --timeout 15000
+./build/qemu-connect --socket "$SOCK" expect "*** guest KERNEL PANIC ***" --timeout 15000
 ./build/qemu-connect --socket "$SOCK" expect "Invalid opcode (#UD)" --timeout 1000
 ./build/qemu-connect --qmp "$QMP" quit
-./build/qemu-connect run --iso test/munux/build/kernel.iso \
-    --expect "*** munux KERNEL PANIC ***" --timeout 15000
+./build/qemu-connect run --iso test/guest/build/kernel.iso \
+    --expect "*** guest KERNEL PANIC ***" --timeout 15000
 ```
 
 ### Protocol response for `get_console` (breaking-friendly)
@@ -678,7 +678,7 @@ typedef struct {
 | `ping` RTT | < 5 ms on local Unix socket |
 | `get_console` | < 20 ms from shadow; < 50 ms with hwaddr refresh |
 | `expect` poll interval | 50–100 ms default |
-| munux panic screen visible (shadow) | typically < 5–15 s cold boot under TCG + GRUB |
+| guest panic screen visible (shadow) | typically < 5–15 s cold boot under TCG + GRUB |
 | Queued vCPU op timeout | default 250 ms → `vcpu_idle_timeout` |
 
 ---
@@ -690,7 +690,7 @@ typedef struct {
 | Pros | Cons |
 |------|------|
 | Simple, mature tooling | Requires UART driver in guest |
-| No plugin / GPL plugin issues | munux/KFS historically VGA-centric |
+| No plugin / GPL plugin issues | guest kernel historically VGA-centric |
 | Works with KVM | Agents still blind on VGA-only panic screens |
 
 **Rejected as primary** — fails the “no guest changes / VGA hobby kernels” goal. Remains a **complement** if guests add serial later.
@@ -730,7 +730,7 @@ typedef struct {
 | Lower TCG overhead | Needs vCPU context for each refresh |
 | Simpler | May miss short-lived messages if not polled |
 
-**Keep as Phase B complement**, not sole path initially — munux panic screens are stable, but interactive shells need freshness.
+**Keep as Phase B complement**, not sole path initially — guest panic screens are stable, but interactive shells need freshness.
 
 ---
 
@@ -790,11 +790,11 @@ typedef struct {
 |------|----------|------------|
 | Server only polled on TB translate | **High** (today) | PR1: dedicated server thread |
 | Queued vCPU op waits forever after permanent `hlt` | **High** | Mandatory queue timeout; default `get_console` shadow-only; never auto-refresh |
-| VGA is IO/device-backed; phys callbacks miss | **Medium** | Process IO hits in range; measured munux `write_count>0` gate in PR2; refresh only while vCPU live |
+| VGA is IO/device-backed; phys callbacks miss | **Medium** | Process IO hits in range; measured guest `write_count>0` gate in PR2; refresh only while vCPU live |
 | Full-store instrumentation slows TCG badly | **Medium** | counters + `vga=off` + later `vga_mode=snapshot` (no fake 1 MiB translate filter) |
 | Thread safety bugs (use-after-free on unload) | **High** | stop flag, shutdown fds, `pthread_join` before free; mem cbs must tolerate teardown |
 | QMP key maps differ across QEMU versions | **Low** | integrate against local 11.0.1; abstract key table; PR5 automated quit gate |
-| munux smoke gates on ephemeral banners | **High** (if wrong) | Assert stable `KERNEL PANIC` / `#UD` / `System halted.` |
+| guest smoke gates on ephemeral banners | **High** (if wrong) | Assert stable `KERNEL PANIC` / `#UD` / `System halted.` |
 | Plugin API version skew on distros | **Medium** | document; CI note; compile-time `QEMU_PLUGIN_VERSION` |
 | Single client only | **Low** | document; reject extra accepts or replace client |
 | Partial JSON reads / multi-line framing bugs | **Medium** | PR1 line buffer + max line + no pipelining |
@@ -805,9 +805,9 @@ typedef struct {
 
 1. **JSON library vs hand parsers:** stay with lightweight string match (`has_cmd`) for small cmd set, or vendor a tiny parser (cJSON) when nesting grows? *Lean: hand-rolled until `expect`/`mem_read` force structure.*
 2. **Plugin-side vs CLI-side `expect`:** recommendation is CLI-first; confirm if agents need multi-client plugin-side waits.
-3. **Should `run` live in the C CLI or shell scripts?** Shell is faster to iterate; C is better for Windows-less Linux agents in one binary. *Propose: shell in PR for munux smoke; C `run` optional later.*
-4. **Attribute capture:** store attribute bytes for color-aware tests? Not required for munux panic-string checks.
-5. **Multi-vCPU:** munux is UP; mem callbacks must still be correct if `smp>1` (mutex already planned).
+3. **Should `run` live in the C CLI or shell scripts?** Shell is faster to iterate; C is better for Windows-less Linux agents in one binary. *Propose: shell in PR for guest smoke; C `run` optional later.*
+4. **Attribute capture:** store attribute bytes for color-aware tests? Not required for guest panic-string checks.
+5. **Multi-vCPU:** guest is UP; mem callbacks must still be correct if `smp>1` (mutex already planned).
 6. **Upstream packaging:** AUR/copr vs user-local `make install` prefix — defer.
 
 ---
@@ -817,14 +817,14 @@ typedef struct {
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Extension mechanism | **TCG plugin**, not fork/device | Shareable `.so`, official API, deep visibility |
-| Console without guest changes | **Phys scrape `0xB8000`** | Matches munux/KFS VGA path; works with `-display none` |
+| Console without guest changes | **Phys scrape `0xB8000`** | Matches guest kernel VGA path; works with `-display none` |
 | Control transport | **Unix socket + JSON lines** | Simple for agents; easy to debug with `socat`/`raw` |
 | Keyboard / power | **QMP from CLI** | Plugins are not input devices; QMP is stable |
 | Socket responsiveness | **Dedicated server thread** | Works during `hlt`/panic; TB-only poll is insufficient |
 | VGA update mechanism | **Store callbacks + optional hwaddr refresh** | Live + robust |
 | Guest hypercall | **Optional, later** | Avoid blocking usefulness on kernel patches |
-| Primary test guest | **munux under `test/munux`** | Real freestanding kernel; ISO path documented |
-| Early smoke assertions | **Stable post-`ud2` panic screen** from `exception_handler`, not transient `kmain` banners and not full `SMOKE.md` shell | Only reliable VGA end-state under current munux |
+| Primary test guest | **guest under `test/guest`** | Real freestanding kernel; ISO path documented |
+| Early smoke assertions | **Stable post-`ud2` panic screen** from `exception_handler`, not transient `kmain` banners and not full `SMOKE.md` shell | Only reliable VGA end-state under current guest |
 | Default `get_console` | **Shadow-only**; refresh explicit + timed | Halt-safe for agents |
 | Queued vCPU work | **Timeout (250 ms default)** → `vcpu_idle_timeout` | Idle callbacks do not re-fire after permanent halt |
 | Socket framing | Newline, 8 KiB max, no pipelining in v1 | Avoid flaky partial reads |
@@ -840,15 +840,15 @@ typedef struct {
 - `docs/architecture.md`, `docs/protocol.md`, `README.md`
 - QEMU plugin header: `/usr/include/qemu-plugin.h` (API version 6)
 - QEMU binary: 11.0.1 (`qemu-system-x86_64`)
-- munux: `test/munux` (`git@github.com:ft-mugurel/munux.git`)
-- munux VGA: `test/munux/src/vga_print.rs`, entry `test/munux/src/kernel.rs`
+- guest: `test/guest` (`<your-kernel-repo-url>`)
+- guest VGA: `test/guest/src/vga_print.rs`, entry `test/guest/src/kernel.rs`
 - Remote: `git@github.com:ft-mugurel/qemu-mip.git`
 
 ---
 
 ## PR Plan
 
-Ordered, independently reviewable PRs. Each lists files, dependencies, acceptance criteria, and munux/Makefile test notes.
+Ordered, independently reviewable PRs. Each lists files, dependencies, acceptance criteria, and guest/Makefile test notes.
 
 ### PR1 — Server thread + reliable `ping` under idle/halt
 
@@ -880,7 +880,7 @@ Ordered, independently reviewable PRs. Each lists files, dependencies, acceptanc
 - [ ] Socket mode is `0600` after bind (when FS allows).
 - [ ] Docs note thread model + framing + chmod.
 
-**munux:** not required for PR1.
+**guest:** not required for PR1.
 
 ---
 
@@ -905,25 +905,25 @@ Ordered, independently reviewable PRs. Each lists files, dependencies, acceptanc
 **Acceptance**
 
 - [ ] Synthetic `qc_vga_note_store` LE u16 cell → correct character in snapshot (optional tiny host test).
-- [ ] **Measured munux path** (preferred): under `-display none -accel tcg`, after boot settles, shadow `get_console` has `writes > 0` and `text` contains `*** munux KERNEL PANIC ***` (or a tiny asm guest that paints known cells if munux unavailable).
+- [ ] **Measured guest path** (preferred): under `-display none -accel tcg`, after boot settles, shadow `get_console` has `writes > 0` and `text` contains `*** guest KERNEL PANIC ***` (or a tiny asm guest that paints known cells if guest unavailable).
 - [ ] IO-backed VGA stores still update shadow (no `is_io` early-return drop).
 - [ ] Proto minor 0.2 documented with normative field table.
 - [ ] `vga=off` disables store instrumentation; shadow stays blank/spaces.
 
-**munux / skip**
+**guest / skip**
 
-- Full automated `test-munux-panic` lands in **PR4**, but PR2 manual/scripted checks must use **panic** strings, not banners.
-- If `test/munux` missing: print `SKIP munux` and **exit 0** for munux-only helpers.
+- Full automated `test-guest-panic` lands in **PR4**, but PR2 manual/scripted checks must use **panic** strings, not banners.
+- If `test/guest` missing: print `SKIP guest` and **exit 0** for guest-only helpers.
 
 ---
 
-### PR3 — Physical refresh path + queue timeouts (not required for munux smoke)
+### PR3 — Physical refresh path + queue timeouts (not required for guest smoke)
 
 | | |
 |--|--|
 | **Title** | `plugin: optional hwaddr refresh for get_console with vCPU queue timeouts` |
 | **Depends on** | PR2 |
-| **Required for munux default smoke?** | **No** — panic screen is captured by store shadow in PR2; PR4 may merge without PR3 |
+| **Required for guest default smoke?** | **No** — panic screen is captured by store shadow in PR2; PR4 may merge without PR3 |
 | **Files** | `plugin/mem.c`, `plugin/protocol.c`, `plugin/agent.c`, new minimal `plugin/queue.c`/`queue.h`, `docs/protocol.md` |
 
 **Work**
@@ -931,13 +931,13 @@ Ordered, independently reviewable PRs. Each lists files, dependencies, acceptanc
 1. Support explicit `{"cmd":"get_console","refresh":true}` only when `vga_refresh=on` (allow, not always).
 2. Minimal deferred queue: server thread enqueues; `tb_exec` / `idle` / `tb_trans` drain; **wait with timeout** (`vcpu_queue_timeout_ms`, default 250).
 3. Rebuild shadow from 4000 raw bytes via `qc_vga_load_cells` on OK read; set `source:"refresh"`.
-4. On timeout: `{"ok":false,"error":"vcpu_idle_timeout"}` — **do not hang**. Permanent munux `hlt` takes this path for refresh.
+4. On timeout: `{"ok":false,"error":"vcpu_idle_timeout"}` — **do not hang**. Permanent guest `hlt` takes this path for refresh.
 5. On hwaddr failure: `hwaddr_read_failed` + `result.code` mapping.
 6. **Do not** auto-refresh when `write_count==0` without an explicit client request.
 
 **Acceptance**
 
-- [ ] **(a)** After munux panic/halt, **shadow-only** `get_console` still returns panic text (regression; no refresh).
+- [ ] **(a)** After guest panic/halt, **shadow-only** `get_console` still returns panic text (regression; no refresh).
 - [ ] **(b)** `refresh:true` after permanent halt returns `vcpu_idle_timeout` within ~timeout (not hang).
 - [ ] **(c)** `refresh:true` **while guest still executing** can succeed and set `source:"refresh"` when hwaddr read works.
 - [ ] `vga=off` + `refresh:true` does not hang; either succeeds while running or times out when idle.
@@ -946,13 +946,13 @@ Ordered, independently reviewable PRs. Each lists files, dependencies, acceptanc
 
 ---
 
-### PR4 — CLI `expect` + munux **panic** Makefile smoke (primary)
+### PR4 — CLI `expect` + guest **panic** Makefile smoke (primary)
 
 | | |
 |--|--|
-| **Title** | `cli: expect/timeout helpers and munux panic smoke` |
+| **Title** | `cli: expect/timeout helpers and guest panic smoke` |
 | **Depends on** | **PR2 only** (solid). PR3 is **optional** and **not** a merge gate for this PR |
-| **Files** | `cli/main.c`, maybe `cli/expect.c`, `Makefile`, `scripts/run-munux.sh`, `examples/munux-panic.sh`, `examples/README.md`, `test/README.md`, `README.md` roadmap |
+| **Files** | `cli/main.c`, maybe `cli/expect.c`, `Makefile`, `scripts/run-guest.sh`, `examples/guest-panic.sh`, `examples/README.md`, `test/README.md`, `README.md` roadmap |
 
 **Work**
 
@@ -960,29 +960,29 @@ Ordered, independently reviewable PRs. Each lists files, dependencies, acceptanc
 2. Optional: `get_console --text-only` for scripts.
 3. Makefile:
    - `test-ping` (may already exist from PR1)
-   - `test-munux-iso` (calls `$(MAKE) -C test/munux iso` if dir exists)
-   - **`test-munux-panic`** — **primary** munux smoke: spawn QEMU+plugin, expect stable panic strings, tear down
-   - `test-munux-banner` — optional target, documented flaky/best-effort; **not** part of `smoke`
-   - `smoke` → `test-ping` + `test-munux-panic` (if munux present)
+   - `test-guest-iso` (calls `$(MAKE) -C test/guest iso` if dir exists)
+   - **`test-guest-panic`** — **primary** guest smoke: spawn QEMU+plugin, expect stable panic strings, tear down
+   - `test-guest-banner` — optional target, documented flaky/best-effort; **not** part of `smoke`
+   - `smoke` → `test-ping` + `test-guest-panic` (if guest present)
 4. Unique sockets under `/tmp/qemu-connect-smoke-$$.*` (or `$XDG_RUNTIME_DIR` when set).
-5. Skip policy: missing munux → `SKIP munux ...` **exit 0** for `test-munux-*` only.
-6. Document munux clone + deps.
+5. Skip policy: missing guest → `SKIP guest ...` **exit 0** for `test-guest-*` only.
+6. Document guest clone + deps.
 
 **Acceptance**
 
-- [ ] `make smoke` passes with munux deps: panic strings observed via plugin console.
-- [ ] Without `test/munux`, `make smoke` runs `test-ping`, prints skip for munux, overall exit 0 only if ping passes.
-- [ ] Non-zero exit if panic strings not seen within timeout when munux **is** present.
+- [ ] `make smoke` passes with guest deps: panic strings observed via plugin console.
+- [ ] Without `test/guest`, `make smoke` runs `test-ping`, prints skip for guest, overall exit 0 only if ping passes.
+- [ ] Non-zero exit if panic strings not seen within timeout when guest **is** present.
 - [ ] Does **not** require PR3 refresh path.
 
-**munux assertions (stable end-state — current `exception_handler`, not full SMOKE.md, not pre-ud2 banners):**
+**guest assertions (stable end-state — current `exception_handler`, not full SMOKE.md, not pre-ud2 banners):**
 
-1. `*** munux KERNEL PANIC ***` (**required**)
+1. `*** guest KERNEL PANIC ***` (**required**)
 2. `Invalid opcode (#UD)` (**required**)
 3. `System halted.` (**required**)
 4. Optional soft checks: `CPU exception`, `vector=6`
 
-**Do not** gate CI on `munux x86_64` / `long mode OK` unless munux adds an explicit hold-before-ud2 mode later.
+**Do not** gate CI on `guest x86_64` / `long mode OK` unless guest adds an explicit hold-before-ud2 mode later.
 
 ---
 
@@ -992,24 +992,24 @@ Ordered, independently reviewable PRs. Each lists files, dependencies, acceptanc
 |--|--|
 | **Title** | `cli: QMP integration for key injection and clean quit` |
 | **Depends on** | PR4 (orchestration scripts help testing) |
-| **Files** | `cli/qmp.c`, `cli/qmp.h`, `cli/main.c`, `docs/architecture.md`, `scripts/run-munux.sh`, `Makefile` |
+| **Files** | `cli/qmp.c`, `cli/qmp.h`, `cli/main.c`, `docs/architecture.md`, `scripts/run-guest.sh`, `Makefile` |
 
 **Work**
 
 1. Connect to QMP Unix socket; handle QMP greeting + `qmp_capabilities`.
 2. Commands: `key`, `type`, `quit` (via QMP).
 3. Map printable ASCII + `ret`/`enter`, `esc`, `tab`, `backspace` to QEMU key names / `input-send-event`.
-4. Integrate with smoke scripts: optional typing once shell exists (feature-detect; skip if munux has no shell yet).
+4. Integrate with smoke scripts: optional typing once shell exists (feature-detect; skip if guest has no shell yet).
 
 **Acceptance (automated gates)**
 
-- [ ] **(1) Required:** QMP greeting + `qmp_capabilities` + `quit` against `-machine none` or empty TCG VM (in-repo, no munux shell). Distinct non-zero exit if QMP handshake fails.
+- [ ] **(1) Required:** QMP greeting + `qmp_capabilities` + `quit` against `-machine none` or empty TCG VM (in-repo, no guest shell). Distinct non-zero exit if QMP handshake fails.
 - [ ] **(2) Optional:** `send-key` against SeaBIOS/GRUB menu when an ISO is present — not required for merge if (1) passes.
-- [ ] **(3) Deferred:** character `type` tests until munux interactive shell returns on x86_64.
+- [ ] **(3) Deferred:** character `type` tests until guest interactive shell returns on x86_64.
 - [ ] `quit` preferred over `kill -9` in smoke teardown once QMP path exists.
 - [ ] Document QMP is **out-of-band** from the plugin socket.
 
-**munux:** no interactive shell yet — do not block PR5 on `kfs>` typing.
+**guest:** no interactive shell yet — do not block PR5 on `kfs>` typing.
 
 ---
 
@@ -1030,7 +1030,7 @@ Ordered, independently reviewable PRs. Each lists files, dependencies, acceptanc
 **Acceptance**
 
 - [ ] One-shot agent workflow documented in README.
-- [ ] `examples/munux-panic.sh` uses `run` or equivalent (panic expects).
+- [ ] `examples/guest-panic.sh` uses `run` or equivalent (panic expects).
 - [ ] Failure modes: ISO missing, QEMU crash, timeout — distinct exit codes.
 
 ---
@@ -1052,7 +1052,7 @@ Ordered, independently reviewable PRs. Each lists files, dependencies, acceptanc
 **Acceptance**
 
 - [ ] `mem_read` of VGA phys returns data consistent with `get_console` chars.
-- [ ] munux deliberate `ud2` increments exception-related counter when implemented.
+- [ ] guest deliberate `ud2` increments exception-related counter when implemented.
 - [ ] Docs warn about trusted socket.
 
 ---
@@ -1063,19 +1063,19 @@ Ordered, independently reviewable PRs. Each lists files, dependencies, acceptanc
 |--|--|
 | **Title** | `plugin: optional guest hypercall at 0xFEE1DEAD` |
 | **Depends on** | PR2 (mem callbacks). **Inline 16-byte ABI only** — does **not** require PR7. Pointer-based payloads are a **future** extension after PR7 |
-| **Files** | `plugin/hypercall.c`, `plugin/mem.c`, `include/qemu-connect.h`, `docs/protocol.md`, optional munux example stub (out-of-tree patch doc only) |
+| **Files** | `plugin/hypercall.c`, `plugin/mem.c`, `include/qemu-connect.h`, `docs/protocol.md`, optional guest example stub (out-of-tree patch doc only) |
 
 **Work**
 
 1. Recognize stores to phys range `[0xFEE1DEAD, 0xFEE1DEAD+16)`; assemble fixed inline struct (magic/cmd/status/reserved).
 2. Surface via `status` / `get_agent_event`.
-3. Document guest-side snippet for munux (do not hard-require munux merge).
+3. Document guest-side snippet for guest (do not hard-require guest merge).
 4. Explicitly reject/ignore “payload pointer” designs in v1 docs.
 
 **Acceptance**
 
 - [ ] Synthetic guest or small test assembly store of the 16-byte block triggers `AGENT_EXIT` / `READY` visible to CLI.
-- [ ] No effect on munux until guest opts in.
+- [ ] No effect on guest until guest opts in.
 - [ ] No dependency on `mem_read` for v1.
 
 ---
@@ -1111,7 +1111,7 @@ flowchart LR
   PR1[PR1 server thread]
   PR2[PR2 VGA text]
   PR3[PR3 hwaddr refresh + timeouts]
-  PR4[PR4 expect + munux panic smoke]
+  PR4[PR4 expect + guest panic smoke]
   PR5[PR5 QMP keys]
   PR6[PR6 run orchestrate]
   PR7[PR7 mem_read + discon]
@@ -1130,13 +1130,13 @@ flowchart LR
   PR2 --> PR9
 ```
 
-**Explicit:** munux default smoke (`test-munux-panic`) is **shadow-only** and may merge in **PR4 immediately after PR2** without waiting for PR3. PR3 generalizes the queue for refresh/`mem_read` and hardens timeout behavior; it is **not** a gate for panic smoke.
+**Explicit:** guest default smoke (`test-guest-panic`) is **shadow-only** and may merge in **PR4 immediately after PR2** without waiting for PR3. PR3 generalizes the queue for refresh/`mem_read` and hardens timeout behavior; it is **not** a gate for panic smoke.
 
 ### Suggested merge order for maximum agent value
 
 1. **PR1** — socket always answers (thread, framing, `-pthread`, chmod)  
 2. **PR2** — VGA shadow + full `get_console` text  
-3. **PR4** — automated **munux panic** smoke (hard-depends PR2 only)  
+3. **PR4** — automated **guest panic** smoke (hard-depends PR2 only)  
 4. **PR3** — explicit refresh + vCPU queue timeouts (enables robust `vga=off` recovery / later mem ops)  
 5. **PR5–PR6** — QMP quit/keys + one-shot `run`  
 6. **PR7–PR8** — `mem_read`/discon + inline hypercall  
@@ -1170,25 +1170,25 @@ flowchart LR
 - `/home/mtu/MTU/xAI/trace/qemu-connect/include/qemu-connect.h`
 - `/home/mtu/MTU/xAI/trace/qemu-connect/Makefile`
 
-### Manual munux golden path (today)
+### Manual guest golden path (today)
 
 ```sh
 # host: build plugin
 make -C /home/mtu/MTU/xAI/trace/qemu-connect
 
 # guest ISO
-make -C /home/mtu/MTU/xAI/trace/qemu-connect/test/munux iso
+make -C /home/mtu/MTU/xAI/trace/qemu-connect/test/guest iso
 
 # terminal A
 qemu-system-x86_64 -display none -m 512M -accel tcg \
-  -cdrom /home/mtu/MTU/xAI/trace/qemu-connect/test/munux/build/kernel.iso \
+  -cdrom /home/mtu/MTU/xAI/trace/qemu-connect/test/guest/build/kernel.iso \
   -boot order=d \
   -plugin /home/mtu/MTU/xAI/trace/qemu-connect/build/libqemu-connect.so,socket=/tmp/qemu-connect.sock
 
 # terminal B (after PR2+; wait for halt)
 /home/mtu/MTU/xAI/trace/qemu-connect/build/qemu-connect --socket /tmp/qemu-connect.sock get_console
 # expect text containing:
-#   *** munux KERNEL PANIC ***
+#   *** guest KERNEL PANIC ***
 #   Invalid opcode (#UD)
 #   System halted.
 ```
@@ -1200,9 +1200,9 @@ qemu-system-x86_64 -display none -m 512M -accel tcg \
 An agent on a stock Linux box can:
 
 1. `git clone` qemu-mip, `make`.
-2. Clone munux into `test/munux`, `make smoke`.
+2. Clone guest into `test/guest`, `make smoke`.
 3. See automated pass proving the guest reached its **stable VGA panic screen** under TCG (post-`ud2` `exception_handler` output), observed via the plugin socket without a human display.
-4. Later: inject keys and assert shell behavior when munux shell returns on x86_64.
+4. Later: inject keys and assert shell behavior when guest shell returns on x86_64.
 5. Never rebuild QEMU; only load `libqemu-connect.so`.
 
 That closes the loop: **compile → boot → observe stable end-state → (drive) → verdict**.

@@ -12,9 +12,9 @@ import {
   getRepoRoot,
   getCliPath,
   getPluginPath,
-  getMunuxRoot,
-  getMunuxIso,
-  getMunuxDisk,
+  getGuestRoot,
+  getGuestIso,
+  getGuestDisk,
 } from "./paths.js";
 import { runMake, runQemuConnect, type CliResult } from "./run-cli.js";
 
@@ -106,7 +106,7 @@ function absPath(p: string | undefined, root: string): string | undefined {
 }
 
 const VI_RECIPE = [
-  "Mini vi recipe (KFS prompt is usually $):",
+  "Mini vi recipe (shell prompt is often $):",
   "1) qemu_session_start({ iso, disk, prompt: '$' })",
   "2) qemu_session_cmd({ cmd: 'vi hello.txt', wait: false })  # do not wait for $",
   "3) qemu_session_key({ qcode: 'i' })                       # insert mode",
@@ -123,7 +123,7 @@ const VI_RECIPE = [
   "  { op:'type', text:':wq', enter:true, expect:'$' },",
   "] })",
   "",
-  "Prefer j/k over arrow keys in vi (arrows may be private-bytes on munux).",
+  "Prefer j/k over arrow keys in vi (arrows may be private-bytes on guest).",
   "Console is glyphs only (no inverse cursor). type/cmd send Enter by default.",
   "Inside vi: omit console_lines (or 0 = full). Tail of non-blank lines is mostly '~'.",
 ].join("\n");
@@ -155,20 +155,20 @@ server.registerTool(
       const root = getRepoRoot();
       const cli = getCliPath(root);
       const plugin = getPluginPath(root);
-      const munux = getMunuxRoot();
-      const iso = getMunuxIso();
-      const disk = getMunuxDisk();
+      const guest = getGuestRoot();
+      const iso = getGuestIso();
+      const disk = getGuestDisk();
       return toolJson({
         ok: true,
         repo_root: root,
         cli: { path: cli, exists: fs.existsSync(cli) },
         plugin: { path: plugin, exists: fs.existsSync(plugin) },
-        munux_root: { path: munux, exists: !!(munux && fs.existsSync(munux)) },
-        munux_iso: { path: iso, exists: fs.existsSync(iso) },
-        munux_disk: { path: disk, exists: fs.existsSync(disk) },
+        guest_root: { path: guest, exists: !!(guest && fs.existsSync(guest)) },
+        guest_iso: { path: iso, exists: fs.existsSync(iso) },
+        guest_disk: { path: disk, exists: fs.existsSync(disk) },
         env: {
           QEMU_CONNECT_ROOT: process.env.QEMU_CONNECT_ROOT ?? null,
-          QEMU_CONNECT_MUNUX: process.env.QEMU_CONNECT_MUNUX ?? null,
+          QEMU_CONNECT_GUEST: process.env.QEMU_CONNECT_GUEST ?? null,
           QEMU_CONNECT_ISO: process.env.QEMU_CONNECT_ISO ?? null,
           QEMU_CONNECT_DISK: process.env.QEMU_CONNECT_DISK ?? null,
           QEMU_CONNECT_PLUGIN: process.env.QEMU_CONNECT_PLUGIN ?? null,
@@ -178,7 +178,7 @@ server.registerTool(
           type_sends_enter:
             "session_type / CLI type send Enter by default; use enter:false or --no-enter for partial (vi).",
           prompt:
-            "session_start prompt defaults from QEMU_CONNECT_PROMPT. KFS uses '$'.",
+            "session_start prompt defaults from QEMU_CONNECT_PROMPT. many shells use '$'.",
           char_map:
             "type maps : ! and common shell/vi punctuation (US QWERTY).",
           console:
@@ -190,7 +190,7 @@ server.registerTool(
           disk_lock:
             "If two boots share disk.img, error is 'disk locked by session X' with stop hint.",
           arrows:
-            "Prefer j/k for vi motion; arrow qcodes may map to private bytes on munux/KFS.",
+            "Prefer j/k for vi motion; arrow qcodes may map to private bytes on guest kernel.",
           wait_false:
             "session_cmd wait:false for vi/top (no prompt wait). session_type already no-waits by default.",
         },
@@ -213,22 +213,22 @@ server.registerTool(
   "qemu_build_guest",
   {
     description:
-      "Build munux/KFS ISO+disk and/or qemu-connect binaries via make. " +
-      "Uses QEMU_CONNECT_MUNUX (or munux_path) — not only test/munux.",
+      "Build guest kernel ISO+disk and/or qemu-connect binaries via make. " +
+      "Uses QEMU_CONNECT_GUEST (or guest_path) — not only test/guest.",
     inputSchema: {
       what: z
-        .enum(["all", "munux", "tool"])
+        .enum(["all", "guest", "tool"])
         .optional()
-        .describe("all (default) | munux | tool"),
-      munux_path: z
+        .describe("all (default) | guest | tool"),
+      guest_path: z
         .string()
         .optional()
         .describe(
-          "Absolute or repo-relative path to munux/KFS tree (overrides QEMU_CONNECT_MUNUX)"
+          "Absolute or repo-relative path to guest kernel tree (overrides QEMU_CONNECT_GUEST)"
         ),
     },
   },
-  async ({ what, munux_path }) => {
+  async ({ what, guest_path }) => {
     const mode = what ?? "all";
     const root = getRepoRoot();
     const steps: Record<string, unknown>[] = [];
@@ -244,15 +244,15 @@ server.registerTool(
         return toolJson({ ok: false, steps }, true);
       }
     }
-    if (mode === "all" || mode === "munux") {
-      let munux = absPath(munux_path, root) ?? getMunuxRoot() ?? undefined;
-      if (!munux || !fs.existsSync(munux)) {
+    if (mode === "all" || mode === "guest") {
+      let guest = absPath(guest_path, root) ?? getGuestRoot() ?? undefined;
+      if (!guest || !fs.existsSync(guest)) {
         return toolJson(
           {
             ok: false,
-            error: "munux tree not found",
+            error: "guest tree not found",
             hint:
-              "Pass munux_path, or set MCP env QEMU_CONNECT_MUNUX=/abs/path/to/KFS " +
+              "Pass guest_path, or set MCP env QEMU_CONNECT_GUEST=/abs/path/to/your-kernel " +
               "(or pin $QEMU_CONNECT_ROOT/.qemu-connect.local)",
             steps,
           },
@@ -260,12 +260,12 @@ server.registerTool(
         );
       }
       const r = await runMake(["iso", "disk"], {
-        cwd: munux,
+        cwd: guest,
         timeoutMs: 600_000,
       });
       steps.push({
-        step: `make -C ${munux} iso disk`,
-        munux_path: munux,
+        step: `make -C ${guest} iso disk`,
+        guest_path: guest,
         ...parseCliJson(r),
         raw_exit: r.exitCode,
       });
@@ -290,7 +290,7 @@ server.registerTool(
       prompt: z
         .string()
         .optional()
-        .describe('Shell prompt to wait for, e.g. "$" or "munux>"'),
+        .describe('Shell prompt to wait for, e.g. "$" or "$"'),
       console_lines: z
         .number()
         .int()
@@ -307,9 +307,9 @@ server.registerTool(
     const args = [
       "guest",
       "--iso",
-      absPath(iso, root) ?? getMunuxIso(),
+      absPath(iso, root) ?? getGuestIso(),
       "--disk",
-      absPath(disk, root) ?? getMunuxDisk(),
+      absPath(disk, root) ?? getGuestDisk(),
       "--plugin",
       getPluginPath(root),
     ];
@@ -356,8 +356,8 @@ server.registerTool(
   },
   async ({ iso, disk, steps, show, console_lines, timeout_ms }) => {
     const root = getRepoRoot();
-    const defaultIso = getMunuxIso();
-    const defaultDisk = getMunuxDisk();
+    const defaultIso = getGuestIso();
+    const defaultDisk = getGuestDisk();
     const isoPath = absPath(iso, root) ?? defaultIso;
     let diskPath: string | undefined;
     if (disk) {
@@ -402,8 +402,8 @@ server.registerTool(
   {
     description:
       "Start a long-lived QEMU session (boot once). Pass iso/disk/prompt for your " +
-      "dev kernel (e.g. KFS prompt \"$\"). Fails clearly if disk is locked by another session. " +
-      "Defaults from QEMU_CONNECT_MUNUX / .qemu-connect.local.",
+      "dev kernel (e.g. shell prompt \"$\"). Fails clearly if disk is locked by another session. " +
+      "Defaults from QEMU_CONNECT_GUEST / .qemu-connect.local.",
     inputSchema: {
       session_id: z.string().optional().describe("Session name (default)"),
       iso: z.string().optional().describe("Path to kernel.iso"),
@@ -411,7 +411,7 @@ server.registerTool(
       prompt: z
         .string()
         .optional()
-        .describe('Shell prompt substring: "$" for KFS, "munux>" for classic'),
+        .describe('Shell prompt substring: "$" for shell guests, "$" for classic'),
       console_lines: z
         .number()
         .int()
@@ -441,9 +441,9 @@ server.registerTool(
         "session",
         "start",
         "--iso",
-        absPath(iso, root) ?? getMunuxIso(),
+        absPath(iso, root) ?? getGuestIso(),
         "--disk",
-        absPath(disk, root) ?? getMunuxDisk(),
+        absPath(disk, root) ?? getGuestDisk(),
         "--plugin",
         getPluginPath(root),
         "--id",
@@ -586,7 +586,7 @@ server.registerTool(
     description:
       "Send a single QMP key (or repeat) — for vi (esc, j, k, ret). " +
       "qcode: esc, ret, backspace, tab, j, k, a-z, 0-9. " +
-      "Prefer j/k over up/down for vi (arrows may be private bytes on munux).",
+      "Prefer j/k over up/down for vi (arrows may be private bytes on guest).",
     inputSchema: {
       qcode: z
         .string()

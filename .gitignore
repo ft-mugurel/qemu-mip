@@ -31,7 +31,7 @@
 /mcp/node_modules/
 /mcp/dist/
 
-# Machine-local munux/plugin paths (do not commit)
+# Machine-local guest/plugin paths (do not commit)
 .qemu-connect.local
 
 # Machine-local Grok MCP env (absolute paths)

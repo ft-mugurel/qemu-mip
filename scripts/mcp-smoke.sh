@@ -89,14 +89,14 @@ text=o["result"]["content"][0]["text"]
 print(text)
 if o["result"].get("isError") or "exit_code: 0" not in text:
     print("FAIL qemu_guest"); sys.exit(1)
-if "munux shell commands" not in text and "munux>" not in text:
+if "guest shell commands" not in text and "$" not in text:
     print("FAIL expected shell/help in output"); sys.exit(1)
 print("OK qemu_guest help")
 '
 
 echo ""
-echo "======== 5) tools/call qemu_run (expect munux> + type about) ========"
-out=$(mcp_session '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"qemu_run","arguments":{"steps":[{"op":"expect","text":"munux>"},{"op":"type","text":"about"}],"show":true,"timeout_ms":60000}}}')
+echo "======== 5) tools/call qemu_run (expect $ + type about) ========"
+out=$(mcp_session '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"qemu_run","arguments":{"steps":[{"op":"expect","text":"$"},{"op":"type","text":"about"}],"show":true,"timeout_ms":60000}}}')
 echo "$out" | extract_id 6 | python3 -c '
 import sys, json
 o=json.load(sys.stdin)

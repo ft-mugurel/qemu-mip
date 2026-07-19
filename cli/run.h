@@ -10,7 +10,7 @@
 #define QC_RUN_USAGE           2
 
 int qc_cmd_run(int argc, char **argv);
-/* Simple munux helper: guest [shell-command...] */
+/* Simple guest helper: guest [shell-command...] */
 int qc_cmd_guest(int argc, char **argv);
 
 #endif

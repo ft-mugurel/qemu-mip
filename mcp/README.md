@@ -7,7 +7,7 @@ Thin **MCP** wrapper around the **qemu-connect CLI**.
 | Tool | Maps to |
 |------|---------|
 | `qemu_connect_info` | Paths + **vi recipe** + agent notes |
-| `qemu_build_guest` | `make` tool and/or munux (`munux_path` optional) |
+| `qemu_build_guest` | `make` tool and/or guest (`guest_path` optional) |
 | `qemu_guest` | One-shot boot+cmd — **JSON always has `console`** |
 | `qemu_run` | Custom expect/type — **JSON always has `console`** |
 | `qemu_session_start` | Boot once — `iso`/`disk`/`prompt`; clear **disk locked** errors |

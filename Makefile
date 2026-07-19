@@ -34,7 +34,7 @@ CLI_OBJS       := $(BUILD_DIR)/cli_main.o $(BUILD_DIR)/cli_qmp.o \
 VGA_UNIT_OBJS  := $(BUILD_DIR)/vga.o $(BUILD_DIR)/test_vga_unit.o
 
 .PHONY: all plugin cli guest clean dirs help test-load test-ping test-vga-unit \
-	test-munux-iso test-munux-console test-munux-shell test-refresh \
+	test-guest-iso test-guest-console test-guest-shell test-refresh \
 	test-qmp test-run test-mem-hypercall smoke
 
 all: plugin cli
@@ -42,10 +42,10 @@ all: plugin cli
 help:
 	@echo "qemu-connect targets:"
 	@echo "  all / plugin / cli"
-	@echo "  guest [CMD=help]     one-shot munux boot/type/show"
+	@echo "  guest [CMD=help]     one-shot guest boot/type/show"
 	@echo "  session              multi-cmd without reboot (see AGENTS.md)"
 	@echo "  test-ping test-vga-unit test-qmp test-run test-mem-hypercall"
-	@echo "  test-munux-shell test-refresh smoke"
+	@echo "  test-guest-shell test-refresh smoke"
 
 dirs:
 	@mkdir -p $(BUILD_DIR)
@@ -113,29 +113,29 @@ test-run: plugin cli
 test-mem-hypercall: plugin cli
 	@bash scripts/test-mem-hypercall.sh
 
-test-munux-iso:
-	@if [ ! -d test/munux ]; then echo "SKIP munux"; exit 0; fi
-	@$(MAKE) -C test/munux iso
+test-guest-iso:
+	@if [ ! -d test/guest ]; then echo "SKIP guest"; exit 0; fi
+	@$(MAKE) -C test/guest iso
 
-test-munux-shell: plugin cli
-	@bash scripts/test-munux-shell.sh
+test-guest-shell: plugin cli
+	@bash scripts/test-guest-shell.sh
 
-test-munux-console: test-munux-shell
+test-guest-console: test-guest-shell
 
 test-refresh: plugin cli
 	@bash scripts/test-refresh.sh
 
 # Simple: make guest CMD='help'
 guest: plugin cli
-	@if [ ! -f test/munux/build/kernel.iso ] || [ ! -f test/munux/build/disk.img ]; then \
-		$(MAKE) -C test/munux iso disk; fi
+	@if [ ! -f test/guest/build/kernel.iso ] || [ ! -f test/guest/build/disk.img ]; then \
+		$(MAKE) -C test/guest iso disk; fi
 	@./$(BUILD_DIR)/$(CLI_NAME) guest $(CMD)
 
 smoke: test-ping test-vga-unit test-qmp
-	@if [ -d test/munux ]; then \
-		$(MAKE) test-munux-shell && $(MAKE) test-refresh && $(MAKE) test-run && $(MAKE) test-mem-hypercall; \
+	@if [ -d test/guest ]; then \
+		$(MAKE) test-guest-shell && $(MAKE) test-refresh && $(MAKE) test-run && $(MAKE) test-mem-hypercall; \
 	else \
-		echo "SKIP munux"; \
+		echo "SKIP guest"; \
 	fi
 
 # --------------------------------------------------------------------------- #
@@ -177,12 +177,12 @@ install: plugin cli
 	@echo ""
 	@echo "Ensure $(BINDIR) is on your PATH, then:"
 	@echo "  # pin your kernel (recommended):"
-	@echo "  echo 'QEMU_CONNECT_MUNUX=/path/to/your/KFS' > $(CURDIR)/.qemu-connect.local"
+	@echo "  echo 'QEMU_CONNECT_GUEST=/path/to/your/kernel' > $(CURDIR)/.qemu-connect.local"
 	@echo "  qemu-connect guest help"
 	@echo ""
 	@echo "Optional MCP:  make install-mcp PREFIX=$(PREFIX)"
 
-# Pass munux path: make install-mcp QEMU_CONNECT_MUNUX=/path/to/KFS
+# Pass guest path: make install-mcp QEMU_CONNECT_GUEST=/path/to/your-kernel
 # Or put it in $(CURDIR)/.qemu-connect.local (preferred; survives reinstall).
 install-mcp:
 	@command -v npm >/dev/null || { echo "npm required for MCP install"; exit 1; }
@@ -192,7 +192,7 @@ install-mcp:
 	@cp -a mcp/package.json mcp/package-lock.json mcp/dist "$(MCPDIR)/"
 	@rm -rf "$(MCPDIR)/node_modules"
 	@cd "$(MCPDIR)" && npm install --omit=dev --silent
-	@# Wrapper always loads .qemu-connect.local so reinstall cannot drop munux path
+	@# Wrapper always loads .qemu-connect.local so reinstall cannot drop guest path
 	@printf '%s\n' \
 		'#!/usr/bin/env bash' \
 		'set -euo pipefail' \
@@ -212,19 +212,19 @@ install-mcp:
 		'exec node "$(MCPDIR)/dist/index.js" "$$@"' \
 		> "$(BINDIR)/qemu-connect-mcp"
 	@chmod 755 "$(BINDIR)/qemu-connect-mcp"
-	@MUNUX_ARG=""; \
-	if [ -n "$${QEMU_CONNECT_MUNUX:-}" ]; then MUNUX_ARG="--munux $$QEMU_CONNECT_MUNUX"; \
+	@GUEST_ARG=""; \
+	if [ -n "$${QEMU_CONNECT_GUEST:-}" ]; then GUEST_ARG="--guest $$QEMU_CONNECT_GUEST"; \
 	elif [ -f "$(CURDIR)/.qemu-connect.local" ]; then \
-	  M=$$(grep -E '^[[:space:]]*(export[[:space:]]+)?QEMU_CONNECT_MUNUX=' "$(CURDIR)/.qemu-connect.local" | tail -1 | sed -E 's/^[^=]+=//;s/^["'\'']//;s/["'\'']$$//'); \
-	  if [ -n "$$M" ]; then MUNUX_ARG="--munux $$M"; fi; \
+	  M=$$(grep -E '^[[:space:]]*(export[[:space:]]+)?QEMU_CONNECT_GUEST=' "$(CURDIR)/.qemu-connect.local" | tail -1 | sed -E 's/^[^=]+=//;s/^["'\'']//;s/["'\'']$$//'); \
+	  if [ -n "$$M" ]; then GUEST_ARG="--guest $$M"; fi; \
 	fi; \
-	bash scripts/gen-mcp-config.sh --prefix "$(PREFIX)" --root "$(CURDIR)" $$MUNUX_ARG --out "$(SHAREDIR)/mcp.json"
+	bash scripts/gen-mcp-config.sh --prefix "$(PREFIX)" --root "$(CURDIR)" $$GUEST_ARG --out "$(SHAREDIR)/mcp.json"
 	@echo ""
 	@echo "MCP installed:"
 	@echo "  $(BINDIR)/qemu-connect-mcp"
 	@echo "  config: $(SHAREDIR)/mcp.json"
 	@echo "Point Cursor/Claude MCP settings at that file (or merge its mcpServers entry)."
-	@echo "Kernel path: QEMU_CONNECT_MUNUX or $(CURDIR)/.qemu-connect.local"
+	@echo "Kernel path: QEMU_CONNECT_GUEST or $(CURDIR)/.qemu-connect.local"
 
 install-all: install install-mcp
 

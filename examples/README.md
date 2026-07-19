@@ -2,14 +2,14 @@
 
 | Script | Purpose |
 |--------|---------|
-| `munux-guest.sh` | Thin wrapper around `qemu-connect guest` |
+| `guest-shell.sh` | Thin wrapper around `qemu-connect guest` |
 | `minimal-ping.sh` | Ping a *already running* plugin socket |
 
 ```sh
 # Preferred
-./examples/munux-guest.sh
-./examples/munux-guest.sh help
-./examples/munux-guest.sh ls
+./examples/guest-shell.sh
+./examples/guest-shell.sh help
+./examples/guest-shell.sh ls
 
 # Same thing
 make guest CMD=help

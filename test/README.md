@@ -1,21 +1,36 @@
 # Test guests
 
-Kernel trees used while developing **qemu-connect**. Nested clones under
+Optional kernel trees used while developing **qemu-connect**. Nested clones under
 `test/*/` are **gitignored**.
 
-## munux
+## Layout
+
+Place any freestanding kernel that builds an ISO (and optional disk) here:
 
 ```sh
-git clone git@github.com:ft-mugurel/munux.git test/munux
+# example — use your own kernel remote
+git clone <your-kernel-repo-url> test/guest
+make -C test/guest iso disk   # or whatever your Makefile targets are
+```
+
+Expected artifacts (defaults):
+
+- `test/guest/build/kernel.iso`
+- `test/guest/build/disk.img` (if your guest needs a root disk)
+
+Or skip `test/guest` entirely and set:
+
+```sh
+export QEMU_CONNECT_GUEST=/absolute/path/to/your/kernel
+export QEMU_CONNECT_PROMPT='$'   # match your shell prompt
 ```
 
 ### Simple checks (from repo root)
 
 ```sh
 make plugin cli
-make -C test/munux iso disk
-
-./build/qemu-connect guest              # boot + console
+# with QEMU_CONNECT_GUEST or test/guest present:
+./build/qemu-connect guest
 ./build/qemu-connect guest help
 make guest CMD=ls
 ```
@@ -24,15 +39,14 @@ make guest CMD=ls
 
 | Target | What it does |
 |--------|----------------|
-| `make guest` / `CMD=…` | One-shot munux boot/type/show |
-| `make test-munux-iso` | Build munux ISO |
-| `make test-munux-shell` | Expect `munux>` shell ready |
-| `make smoke` | Unit/QMP + munux shell checks when present |
+| `make guest` / `CMD=…` | One-shot boot/type/show |
+| `make test-guest-iso` | Build ISO under `test/guest` if present |
+| `make test-guest-shell` | Boot and expect shell prompt |
+| `make smoke` | Unit/QMP + guest checks when a guest tree is present |
 
-### Success markers (current munux U6+)
+### Success markers
 
-1. `munux shell ready`
-2. Prompt **`munux>`**
-3. Optional: `guest help` shows `munux shell commands:`
+Configure **`QEMU_CONNECT_PROMPT`** (or `--prompt`) to match your guest.
+Common values: `$`, `#`, `>`, or a custom banner string.
 
-Needs **ISO + disk.img** (ext2 rootfs).
+Needs **ISO** (and **disk.img** if your kernel mounts one).

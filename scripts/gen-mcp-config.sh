@@ -4,17 +4,17 @@ set -euo pipefail
 
 PREFIX="${HOME}/.local"
 ROOT=""
-MUNUX=""
+GUEST=""
 OUT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --prefix) PREFIX="$2"; shift 2 ;;
     --root) ROOT="$2"; shift 2 ;;
-    --munux) MUNUX="$2"; shift 2 ;;
+    --guest) GUEST="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     -h|--help)
-      echo "Usage: gen-mcp-config.sh --root TOOL_REPO [--munux MUNUX_REPO] [--prefix ~/.local] [--out path]"
+      echo "Usage: gen-mcp-config.sh --root TOOL_REPO [--guest GUEST_KERNEL_TREE] [--prefix ~/.local] [--out path]"
       exit 0
       ;;
     *) echo "unknown arg $1"; exit 1 ;;
@@ -41,10 +41,10 @@ fi
 
 mkdir -p "$(dirname "$OUT")"
 
-if [[ -n "$MUNUX" ]]; then
-  MUNUX=$(cd "$MUNUX" && pwd)
+if [[ -n "$GUEST" ]]; then
+  GUEST=$(cd "$GUEST" && pwd)
   ENV_EXTRA=",
-        \"QEMU_CONNECT_MUNUX\": \"${MUNUX}\""
+        \"QEMU_CONNECT_GUEST\": \"${GUEST}\""
 else
   ENV_EXTRA=""
 fi
@@ -69,8 +69,8 @@ JSON
 echo "Wrote $OUT"
 echo "  QEMU_CONNECT_ROOT   = $ROOT"
 echo "  QEMU_CONNECT_PLUGIN = $PLUGIN"
-if [[ -n "$MUNUX" ]]; then
-  echo "  QEMU_CONNECT_MUNUX  = $MUNUX"
+if [[ -n "$GUEST" ]]; then
+  echo "  QEMU_CONNECT_GUEST  = $GUEST"
 else
-  echo "  QEMU_CONNECT_MUNUX  = (unset — uses \$ROOT/test/munux)"
+  echo "  QEMU_CONNECT_GUEST  = (unset — uses \$ROOT/test/guest)"
 fi

@@ -12,7 +12,7 @@ int main(void)
     qc_vga_state_t vga;
     qc_vga_init(&vga);
 
-    /* munux-style cell at phys 0xB8000: char 'A', attr 0x0F */
+    /* guest-style cell at phys 0xB8000: char 'A', attr 0x0F */
     uint16_t cell = (uint16_t)'A' | ((uint16_t)0x0F << 8);
     qc_vga_note_store(&vga, QEMU_CONNECT_VGA_TEXT_PHYS, cell, 2);
 

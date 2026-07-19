@@ -17,7 +17,7 @@ Built as a **QEMU TCG plugin** (`.so`) plus a small **CLI**, with an optional **
 ```text
 You / AI agent
     →  qemu-connect guest help
-    →  QEMU + plugin + munux
+    →  QEMU + plugin + guest
     →  console text + exit 0/1
 ```
 
@@ -38,7 +38,9 @@ cd qemu-mip
 ./scripts/install.sh          # → ~/.local/bin/qemu-connect (+ MCP if Node present)
 export PATH="$HOME/.local/bin:$PATH"
 export QEMU_CONNECT_ROOT="$PWD"
-make -C test/munux iso disk   # once (clone munux into test/munux first if needed)
+export QEMU_CONNECT_GUEST=/path/to/your/kernel   # build/kernel.iso + disk.img
+export QEMU_CONNECT_PROMPT='$'                   # match your shell prompt
+# make -C "$QEMU_CONNECT_GUEST" iso disk
 qemu-connect guest help
 ```
 
@@ -66,41 +68,40 @@ sudo apt install qemu-system-x86 build-essential libglib2.0-dev
 
 ---
 
-## Quick start (munux)
+## Quick start (any freestanding kernel)
 
 ```sh
-# Guest kernel (once)
-git clone git@github.com:ft-mugurel/munux.git test/munux
-make -C test/munux iso disk
+# Point at your kernel tree (must produce build/kernel.iso + build/disk.img
+# or set QEMU_CONNECT_ISO / QEMU_CONNECT_DISK). Example layout:
+#   export QEMU_CONNECT_GUEST=/path/to/your/kernel
+#   make -C "$QEMU_CONNECT_GUEST" iso disk
+#
+# Or drop a clone under test/guest/ (gitignored) and omit the env var.
 
-# Tool
 make plugin cli
 
-# Boot and show the screen
+# Boot and show the screen (waits for shell prompt; default $)
+export QEMU_CONNECT_PROMPT='$'   # set to match your kernel's prompt
 ./build/qemu-connect guest
 
 # Type a shell command
 ./build/qemu-connect guest help
 ./build/qemu-connect guest ls
-./build/qemu-connect guest cat hello.txt
 
-# Same via make
+# Same via make (uses test/guest defaults if present)
 make guest
 make guest CMD=help
 ```
 
-**Success:** process exit code **0**, console shows `munux>` (and your command output).
+**Success:** process exit code **0**, console contains your prompt (and command output).
 
 ```text
 $ ./build/qemu-connect guest help
 …
-munux> help
-munux shell commands:
-  help            This list
-  about           Kernel summary
-  …
-munux>
-{"ok":true,"exit_code":0}
+$ help
+…
+$
+{"ok":true,"exit_code":0,"console":"..."}
 ```
 
 ---
@@ -124,15 +125,15 @@ JSON on stdout each time (`ok`, `console`, `exit_code`).
 ./build/qemu-connect guest [shell words…]
 ```
 
-Boots munux (ISO + disk), waits for `munux>`, types the command if given, prints the console, quits QEMU.
+Boots guest (ISO + disk), waits for `$`, types the command if given, prints the console, quits QEMU.
 
 ### `run` — custom steps
 
 ```sh
 ./build/qemu-connect run \
-  --iso test/munux/build/kernel.iso \
-  --disk test/munux/build/disk.img \
-  --expect 'munux>' \
+  --iso test/guest/build/kernel.iso \
+  --disk test/guest/build/disk.img \
+  --expect '$' \
   --type help \
   --show
 ```
@@ -150,7 +151,7 @@ Boots munux (ISO + disk), waits for `munux>`, types the command if given, prints
 
 ```sh
 ./build/qemu-connect ping|version|status     # against a live plugin socket
-./build/qemu-connect expect 'munux>' --timeout 60000
+./build/qemu-connect expect '$' --timeout 60000
 ./build/qemu-connect --qmp /path.qmp quit    # clean power-off
 ```
 
@@ -178,7 +179,7 @@ cd mcp && npm install && npm run build
 | Tool | Does |
 |------|------|
 | `qemu_connect_info` | Paths / binaries present? |
-| `qemu_build_guest` | Build plugin + munux ISO/disk |
+| `qemu_build_guest` | Build plugin + guest ISO/disk |
 | `qemu_guest` | Same as `guest` |
 | `qemu_run` | Same as `run` |
 | `qemu_session_*` | start / cmd / console / status / stop |
@@ -209,7 +210,7 @@ cli/        Host CLI → qemu-connect
 mcp/        MCP server (Node/TypeScript)
 docs/       Architecture & protocol
 AGENTS.md   Instructions for coding agents
-test/       Local munux clone (gitignored)
+test/       Local guest clone (gitignored)
 ```
 
 ---
@@ -219,7 +220,7 @@ test/       Local munux clone (gitignored)
 ```sh
 make test-ping
 make guest CMD=help
-make smoke                 # broader suite if test/munux exists
+make smoke                 # broader suite if test/guest exists
 ./scripts/mcp-smoke.sh     # MCP tools end-to-end
 ```
 
@@ -233,7 +234,7 @@ make smoke                 # broader suite if test/munux exists
 | [mcp/README.md](mcp/README.md) | MCP setup |
 | [docs/architecture.md](docs/architecture.md) | Design |
 | [docs/protocol.md](docs/protocol.md) | JSON control protocol |
-| [test/README.md](test/README.md) | munux under `test/` |
+| [test/README.md](test/README.md) | guest under `test/` |
 
 ---
 

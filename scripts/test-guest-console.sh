@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 # Compat: console smoke → shell guest helper
-exec "$(dirname "$0")/test-munux-shell.sh"
+exec "$(dirname "$0")/test-guest-shell.sh"

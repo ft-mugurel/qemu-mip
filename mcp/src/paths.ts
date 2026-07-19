@@ -6,7 +6,7 @@ import os from "node:os";
 const LOCAL_KEYS = new Set([
   "QEMU_CONNECT_ROOT",
   "QEMU_CONNECT_HOME",
-  "QEMU_CONNECT_MUNUX",
+  "QEMU_CONNECT_GUEST",
   "QEMU_CONNECT_ISO",
   "QEMU_CONNECT_DISK",
   "QEMU_CONNECT_PLUGIN",
@@ -117,20 +117,20 @@ export function getRepoRoot(): string {
   );
 }
 
-/** Your munux kernel tree (the one you develop). */
-export function getMunuxRoot(): string | null {
-  // Ensure local config applied (sets QEMU_CONNECT_MUNUX from .qemu-connect.local)
+/** Your guest kernel tree (the one you develop). */
+export function getGuestRoot(): string | null {
+  // Ensure local config applied (sets QEMU_CONNECT_GUEST from .qemu-connect.local)
   try {
     getRepoRoot();
   } catch {
     loadLocalConfigs();
   }
-  const env = process.env.QEMU_CONNECT_MUNUX;
+  const env = process.env.QEMU_CONNECT_GUEST;
   if (env && fs.existsSync(env)) {
     return path.resolve(env);
   }
   try {
-    const bundled = path.join(getRepoRoot(), "test", "munux");
+    const bundled = path.join(getRepoRoot(), "test", "guest");
     if (fs.existsSync(bundled)) {
       return bundled;
     }
@@ -140,22 +140,22 @@ export function getMunuxRoot(): string | null {
   return null;
 }
 
-export function getMunuxIso(): string {
+export function getGuestIso(): string {
   if (process.env.QEMU_CONNECT_ISO) {
     return path.resolve(process.env.QEMU_CONNECT_ISO);
   }
-  const m = getMunuxRoot();
+  const m = getGuestRoot();
   if (m) return path.join(m, "build", "kernel.iso");
-  return path.join(getRepoRoot(), "test/munux/build/kernel.iso");
+  return path.join(getRepoRoot(), "test/guest/build/kernel.iso");
 }
 
-export function getMunuxDisk(): string {
+export function getGuestDisk(): string {
   if (process.env.QEMU_CONNECT_DISK) {
     return path.resolve(process.env.QEMU_CONNECT_DISK);
   }
-  const m = getMunuxRoot();
+  const m = getGuestRoot();
   if (m) return path.join(m, "build", "disk.img");
-  return path.join(getRepoRoot(), "test/munux/build/disk.img");
+  return path.join(getRepoRoot(), "test/guest/build/disk.img");
 }
 
 export function getCliPath(root: string): string {

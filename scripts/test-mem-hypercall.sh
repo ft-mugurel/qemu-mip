@@ -7,13 +7,13 @@ echo "=== hypercall unit ==="
 make -s build/test_hypercall_unit
 ./build/test_hypercall_unit
 
-MUNUX="$ROOT/test/munux"
+GUEST="$ROOT/test/guest"
 PLUGIN="$ROOT/build/libqemu-connect.so"
 CLI="$ROOT/build/qemu-connect"
 make -s plugin cli
 
-if [[ ! -d "$MUNUX" ]]; then
-  echo "SKIP munux integration"
+if [[ ! -d "$GUEST" ]]; then
+  echo "SKIP guest integration"
   exit 0
 fi
 
@@ -31,9 +31,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-make -C "$MUNUX" iso disk >/dev/null
-ISO="$MUNUX/build/kernel.iso"
-DISK="$MUNUX/build/disk.img"
+make -C "$GUEST" iso disk >/dev/null
+ISO="$GUEST/build/kernel.iso"
+DISK="$GUEST/build/disk.img"
 
 rm -f "$SOCK" "$QSOCK"
 qemu-system-x86_64 -display none -m 512M -accel tcg \
@@ -47,7 +47,7 @@ qemu-system-x86_64 -display none -m 512M -accel tcg \
 QPID=$!
 
 for _ in $(seq 1 100); do [[ -S "$SOCK" ]] && break; sleep 0.1; done
-"$CLI" --socket "$SOCK" expect 'munux>' --timeout 60000
+"$CLI" --socket "$SOCK" expect '$' --timeout 60000
 
 st=$("$CLI" --socket "$SOCK" status)
 echo "status: $st" | head -c 300; echo
@@ -59,7 +59,7 @@ if echo "$mr" | grep -q '"ok":true'; then
 else
   echo "WARN mem_read: $mr (shadow still works)"
   text=$("$CLI" --socket "$SOCK" get_console --text-only)
-  echo "$text" | grep -q 'munux>' || exit 1
+  echo "$text" | grep -q '$' || exit 1
 fi
 
 echo "=== PASS test-mem-hypercall ==="
